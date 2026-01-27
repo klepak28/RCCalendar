@@ -1,0 +1,21 @@
+{
+  "name": "rccalendar",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r run dev --parallel",
+    "dev:api": "pnpm --filter api run dev",
+    "dev:web": "pnpm --filter web run dev",
+    "build": "pnpm -r run build",
+    "build:api": "pnpm --filter api run build",
+    "build:web": "pnpm --filter web run build",
+    "db:generate": "pnpm --filter api run prisma:generate",
+    "db:migrate": "pnpm --filter api run prisma:migrate",
+    "db:migrate:deploy": "pnpm --filter api run prisma:migrate:deploy",
+    "db:seed": "pnpm --filter api run prisma:seed",
+    "db:studio": "pnpm --filter api run prisma:studio"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.14.2"
+}

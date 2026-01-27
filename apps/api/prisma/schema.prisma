@@ -1,0 +1,58 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  password  String
+  timezone  String   @default("America/Chicago")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tasks     Task[]
+}
+
+model Service {
+  id         String   @id @default(cuid())
+  name       String
+  priceCents Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tasks      Task[]
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  name      String
+  colorHex  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tasks     Task[]
+}
+
+model Task {
+  id           String   @id @default(cuid())
+  customerName String
+  serviceId    String
+  service      Service  @relation(fields: [serviceId], references: [id])
+  servicePrice Int      // cached from service at creation (cents)
+  address      String?
+  description  String?
+  notes        String?
+  startAt      DateTime
+  endAt        DateTime
+  allDay       Boolean  @default(false)
+  teamId       String?
+  team         Team?    @relation(fields: [teamId], references: [id])
+  createdById  String
+  createdBy    User     @relation(fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  rrule        String?  // iCalendar RRULE; null = one-time
+}
