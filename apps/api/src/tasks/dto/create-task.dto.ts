@@ -17,6 +17,14 @@ export class CreateTaskDto {
 
   @IsOptional()
   @IsString()
+  customerId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  phone?: string | null;
+
+  @IsOptional()
+  @IsString()
   @ValidateIf((o) => o.serviceId !== null && o.serviceId !== '')
   @MinLength(1)
   serviceId?: string | null;

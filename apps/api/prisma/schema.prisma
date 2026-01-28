@@ -19,12 +19,11 @@ model User {
 }
 
 model Service {
-  id         String   @id @default(cuid())
-  name       String   @unique
-  priceCents Int
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  tasks      Task[]
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tasks     Task[]
 }
 
 model Team {
@@ -36,13 +35,26 @@ model Team {
   tasks     Task[]
 }
 
+model Customer {
+  id        String   @id @default(cuid())
+  fullName  String
+  address   String
+  phone     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tasks     Task[]
+}
+
 model Task {
   id                String   @id @default(cuid())
   customerName      String
+  customerId        String?
+  customer          Customer? @relation(fields: [customerId], references: [id])
+  address           String?
+  phone             String?
   serviceId         String?
   service           Service? @relation(fields: [serviceId], references: [id])
-  servicePriceCents Int?     // per-task price override (cents); if null and serviceId set, defaults to Service.priceCents
-  address           String?
+  servicePriceCents Int?     // per-task price (cents)
   description       String?
   notes             String?
   startAt           DateTime

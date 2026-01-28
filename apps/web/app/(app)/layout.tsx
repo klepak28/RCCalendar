@@ -60,6 +60,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               Calendar
             </Link>
             <Link
+              href="/customers"
+              className={`rounded px-2 py-1 ${pathname === '/customers' ? 'bg-gray-100 font-medium' : 'hover:bg-gray-100'}`}
+            >
+              Add Customer
+            </Link>
+            <Link
               href="/settings"
               className={`rounded px-2 py-1 ${pathname?.startsWith('/settings') ? 'bg-gray-100 font-medium' : 'hover:bg-gray-100'}`}
             >

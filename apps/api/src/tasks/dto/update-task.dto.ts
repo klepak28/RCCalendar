@@ -17,6 +17,14 @@ export class UpdateTaskDto {
 
   @IsOptional()
   @IsString()
+  customerId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  phone?: string | null;
+
+  @IsOptional()
+  @IsString()
   @Type(() => String)
   serviceId?: string | null;
 

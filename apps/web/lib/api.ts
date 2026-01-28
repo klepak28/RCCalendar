@@ -25,17 +25,20 @@ export async function api<T>(
 }
 
 export type User = { id: string; username: string; timezone: string };
-export type Service = { id: string; name: string; priceCents: number };
+export type Service = { id: string; name: string };
 export type Team = { id: string; name: string; colorHex: string };
+export type Customer = { id: string; fullName: string; address: string; phone: string };
 export type TaskOccurrence = {
   taskId: string;
   occurrenceStart: string;
   occurrenceEnd: string;
   customerName: string;
+  customerId: string | null;
+  address: string | null;
+  phone: string | null;
   serviceId: string | null;
   service: Service | null;
   servicePriceCents: number | null;
-  address: string | null;
   description: string | null;
   notes: string | null;
   allDay: boolean;
@@ -49,10 +52,12 @@ export type TaskOccurrence = {
 export type TaskRecord = {
   id: string;
   customerName: string;
+  customerId: string | null;
+  address: string | null;
+  phone: string | null;
   serviceId: string | null;
   service: Service | null;
   servicePriceCents: number | null;
-  address: string | null;
   description: string | null;
   notes: string | null;
   startAt: string;
@@ -93,10 +98,10 @@ export const users = {
 
 export const services = {
   list: () => api<Service[]>('/api/services'),
-  create: (name: string, priceCents: number) =>
+  create: (name: string) =>
     api<Service>('/api/services', {
       method: 'POST',
-      body: JSON.stringify({ name, priceCents }),
+      body: JSON.stringify({ name }),
     }),
   update: (id: string, d: Partial<Service>) =>
     api<Service>(`/api/services/${id}`, {
@@ -123,12 +128,32 @@ export const teams = {
     api<void>(`/api/teams/${id}`, { method: 'DELETE' }),
 };
 
+export const customers = {
+  list: (query?: string) =>
+    api<Customer[]>(`/api/customers${query ? `?query=${encodeURIComponent(query)}` : ''}`),
+  get: (id: string) => api<Customer>(`/api/customers/${id}`),
+  create: (fullName: string, address: string, phone: string) =>
+    api<Customer>('/api/customers', {
+      method: 'POST',
+      body: JSON.stringify({ fullName, address, phone }),
+    }),
+  update: (id: string, d: Partial<Customer>) =>
+    api<Customer>(`/api/customers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(d),
+    }),
+  delete: (id: string) =>
+    api<void>(`/api/customers/${id}`, { method: 'DELETE' }),
+};
+
 export const tasks = {
   list: (from: string, to: string) =>
     api<TaskOccurrence[]>(`/api/tasks?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
   get: (id: string) => api<TaskRecord>(`/api/tasks/${id}`),
   create: (d: {
     customerName: string;
+    customerId?: string;
+    phone?: string;
     serviceId?: string;
     servicePriceCents?: number;
     address?: string;

@@ -10,10 +10,12 @@ export interface TaskOccurrence {
   occurrenceStart: string; // ISO
   occurrenceEnd: string;   // ISO
   customerName: string;
-  serviceId: string | null;
-  service: { id: string; name: string; priceCents: number } | null;
-  servicePriceCents: number | null;
+  customerId: string | null;
   address: string | null;
+  phone: string | null;
+  serviceId: string | null;
+  service: { id: string; name: string } | null;
+  servicePriceCents: number | null;
   description: string | null;
   notes: string | null;
   allDay: boolean;
@@ -72,10 +74,12 @@ export class TasksService {
       endAt: Date;
       allDay: boolean;
       customerName: string;
-      serviceId: string | null;
-      service: { id: string; name: string; priceCents: number } | null;
-      servicePriceCents: number | null;
+      customerId: string | null;
       address: string | null;
+      phone: string | null;
+      serviceId: string | null;
+      service: { id: string; name: string } | null;
+      servicePriceCents: number | null;
       description: string | null;
       notes: string | null;
       assignedTeamId: string | null;
@@ -95,10 +99,12 @@ export class TasksService {
             occurrenceStart: task.startAt.toISOString(),
             occurrenceEnd: task.endAt.toISOString(),
             customerName: task.customerName,
+            customerId: task.customerId,
+            address: task.address,
+            phone: task.phone,
             serviceId: task.serviceId,
             service: task.service,
             servicePriceCents: task.servicePriceCents,
-            address: task.address,
             description: task.description,
             notes: task.notes,
             allDay: task.allDay,
@@ -129,10 +135,12 @@ export class TasksService {
         occurrenceStart: start.toISOString(),
         occurrenceEnd: end.toISOString(),
         customerName: task.customerName,
+        customerId: task.customerId,
+        address: task.address,
+        phone: task.phone,
         serviceId: task.serviceId,
         service: task.service,
         servicePriceCents: task.servicePriceCents,
-        address: task.address,
         description: task.description,
         notes: task.notes,
         allDay: task.allDay,
@@ -154,6 +162,7 @@ export class TasksService {
         ],
       },
       include: {
+        customer: true,
         service: true,
         assignedTeam: true,
         createdBy: { select: { id: true, username: true } },
@@ -161,14 +170,7 @@ export class TasksService {
     });
     const out: TaskOccurrence[] = [];
     for (const t of tasks) {
-      out.push(...this.expandRecurring(
-        {
-          ...t,
-          servicePriceCents: t.servicePriceCents ?? (t.service?.priceCents ?? null),
-        },
-        from,
-        to,
-      ));
+      out.push(...this.expandRecurring(t, from, to));
     }
     return out.sort(
       (a, b) =>
@@ -204,17 +206,14 @@ export class TasksService {
     const normalizedServiceId = this.normalizeString(dto.serviceId);
 
     // Normalize and validate price
-    let servicePriceCents: number | null = this.normalizePrice(dto.servicePriceCents);
+    const servicePriceCents: number | null = this.normalizePrice(dto.servicePriceCents);
     
-    // Auto-fill price from service if not provided
+    // Validate service exists if provided
     if (normalizedServiceId) {
       try {
-        const service = await this.prisma.service.findUniqueOrThrow({
+        await this.prisma.service.findUniqueOrThrow({
           where: { id: normalizedServiceId },
         });
-        if (servicePriceCents === null) {
-          servicePriceCents = service.priceCents;
-        }
       } catch (error) {
         if (this.isDev) {
           this.logger.error(`Failed to fetch service ${normalizedServiceId}:`, error);
@@ -223,12 +222,38 @@ export class TasksService {
       }
     }
 
+    // Handle customer data
+    let customerId: string | null = this.normalizeString(dto.customerId);
+    let customerName = dto.customerName.trim();
+    let address = this.normalizeString(dto.address);
+    let phone = this.normalizeString(dto.phone);
+
+    // If customerId is provided, fetch customer and snapshot data
+    if (customerId) {
+      try {
+        const customer = await this.prisma.customer.findUniqueOrThrow({
+          where: { id: customerId },
+        });
+        // Snapshot customer data into task
+        customerName = customer.fullName;
+        address = customer.address;
+        phone = customer.phone;
+      } catch (error) {
+        if (this.isDev) {
+          this.logger.error(`Failed to fetch customer ${customerId}:`, error);
+        }
+        throw new BadRequestException(`Customer not found: ${customerId}`);
+      }
+    }
+
     // Normalize all optional fields
     const normalizedData = {
-      customerName: dto.customerName.trim(),
+      customerName,
+      customerId,
+      address,
+      phone,
       serviceId: normalizedServiceId,
       servicePriceCents,
-      address: this.normalizeString(dto.address),
       description: this.normalizeString(dto.description),
       notes: this.normalizeString(dto.notes),
       startAt,
@@ -251,6 +276,7 @@ export class TasksService {
       return await this.prisma.task.create({
         data: normalizedData,
         include: {
+          customer: true,
           service: true,
           assignedTeam: true,
           createdBy: { select: { id: true, username: true } },
@@ -270,28 +296,61 @@ export class TasksService {
   async update(id: string, dto: UpdateTaskDto) {
     const existing = await this.prisma.task.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Task not found');
-    let servicePriceCents: number | null | undefined = dto.servicePriceCents;
+    const servicePriceCents: number | null | undefined = dto.servicePriceCents;
     const normalizedServiceId = dto.serviceId !== undefined 
       ? ((dto.serviceId && dto.serviceId.trim()) ? dto.serviceId : null)
       : undefined;
-    if (normalizedServiceId !== undefined) {
-      if (normalizedServiceId) {
-        const svc = await this.prisma.service.findUniqueOrThrow({
+    
+    // Validate service exists if provided
+    if (normalizedServiceId) {
+      try {
+        await this.prisma.service.findUniqueOrThrow({
           where: { id: normalizedServiceId },
         });
-        if (servicePriceCents === null || servicePriceCents === undefined) {
-          servicePriceCents = svc.priceCents;
+      } catch (error) {
+        if (this.isDev) {
+          this.logger.error(`Failed to fetch service ${normalizedServiceId}:`, error);
         }
+        throw new BadRequestException(`Service not found: ${normalizedServiceId}`);
       }
-      // If serviceId cleared (null/empty), keep servicePriceCents as-is (don't change it)
-    } else if (servicePriceCents === undefined) {
-      servicePriceCents = existing.servicePriceCents;
     }
+    // Handle customer updates
+    let customerId: string | null | undefined = dto.customerId !== undefined
+      ? this.normalizeString(dto.customerId)
+      : undefined;
+    let customerName: string | undefined = dto.customerName;
+    let address: string | null | undefined = dto.address !== undefined
+      ? this.normalizeString(dto.address)
+      : undefined;
+    let phone: string | null | undefined = dto.phone !== undefined
+      ? this.normalizeString(dto.phone)
+      : undefined;
+
+    // If customerId is being set/changed, fetch customer and snapshot data
+    if (customerId !== undefined && customerId !== null) {
+      try {
+        const customer = await this.prisma.customer.findUniqueOrThrow({
+          where: { id: customerId },
+        });
+        // Snapshot customer data into task
+        customerName = customer.fullName;
+        address = customer.address;
+        phone = customer.phone;
+      } catch (error) {
+        if (this.isDev) {
+          this.logger.error(`Failed to fetch customer ${customerId}:`, error);
+        }
+        throw new BadRequestException(`Customer not found: ${customerId}`);
+      }
+    }
+
     const updateData: {
         customerName?: string;
+        customerId?: string | null;
+        address?: string | null;
+        phone?: string | null;
         serviceId?: string | null;
         servicePriceCents?: number | null;
-        address?: string | null;
         description?: string | null;
         notes?: string | null;
         startAt?: Date;
@@ -301,10 +360,12 @@ export class TasksService {
         rrule?: string | null;
       } = {};
     
-    if (dto.customerName !== undefined) updateData.customerName = dto.customerName;
+    if (customerName !== undefined) updateData.customerName = customerName;
+    if (customerId !== undefined) updateData.customerId = customerId;
+    if (address !== undefined) updateData.address = address;
+    if (phone !== undefined) updateData.phone = phone;
     if (normalizedServiceId !== undefined) updateData.serviceId = normalizedServiceId;
     if (servicePriceCents !== undefined) updateData.servicePriceCents = servicePriceCents;
-    if (dto.address !== undefined) updateData.address = dto.address ?? null;
     if (dto.description !== undefined) updateData.description = dto.description ?? null;
     if (dto.notes !== undefined) updateData.notes = dto.notes ?? null;
     
@@ -347,6 +408,7 @@ export class TasksService {
       where: { id },
       data: updateData,
       include: {
+        customer: true,
         service: true,
         assignedTeam: true,
         createdBy: { select: { id: true, username: true } },

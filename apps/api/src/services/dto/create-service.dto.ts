@@ -1,13 +1,7 @@
-import { IsString, MinLength, IsInt, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsString, MinLength } from 'class-validator';
 
 export class CreateServiceDto {
   @IsString()
   @MinLength(1)
   name: string;
-
-  @IsInt()
-  @Min(0)
-  @Type(() => Number)
-  priceCents: number;
 }

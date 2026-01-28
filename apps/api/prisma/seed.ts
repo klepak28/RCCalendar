@@ -17,16 +17,16 @@ async function main() {
   console.log('Seeded user:', admin.username);
 
   const services = [
-    { name: 'Standard cleaning', priceCents: 15000 },
-    { name: 'Deep cleaning', priceCents: 25000 },
-    { name: 'Move out cleaning', priceCents: 35000 },
-    { name: 'Window cleaning', priceCents: 12000 },
+    'Standard cleaning',
+    'Deep cleaning',
+    'Move out cleaning',
+    'Window cleaning',
   ];
-  for (const s of services) {
+  for (const name of services) {
     await prisma.service.upsert({
-      where: { name: s.name },
+      where: { name },
       update: {},
-      create: s,
+      create: { name },
     });
   }
   console.log('Seeded services');

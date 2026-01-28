@@ -240,7 +240,7 @@ function DayDrawer({
                     {o.customerName}
                   </div>
                   <div className="text-xs text-gray-500">
-                    {o.service?.name ?? 'No service'} · {o.servicePriceCents !== null ? `$${(o.servicePriceCents / 100).toFixed(2)}` : '—'} · {o.createdBy.username}
+                    {o.service?.name ?? 'No service'} · {o.servicePriceCents !== null ? `$${(o.servicePriceCents / 100).toFixed(2)}` : '—'} · {o.phone ? `${o.phone} · ` : ''}{o.createdBy.username}
                   </div>
                 </div>
                 <button
@@ -303,10 +303,16 @@ function TaskModal({
   onSaved: () => void;
 }) {
   const [customerName, setCustomerName] = useState('');
+  const [customerId, setCustomerId] = useState<string | null>(null);
+  const [address, setAddress] = useState('');
+  const [phone, setPhone] = useState('');
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [customerSuggestions, setCustomerSuggestions] = useState<{ id: string; fullName: string; address: string; phone: string }[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [customerManuallyEdited, setCustomerManuallyEdited] = useState(false);
   const [serviceId, setServiceId] = useState('');
   const [servicePriceCents, setServicePriceCents] = useState<number | null>(null);
-  const [priceOverridden, setPriceOverridden] = useState(false);
-  const [address, setAddress] = useState('');
+  const [priceDisplay, setPriceDisplay] = useState<string>('');
   const [description, setDescription] = useState('');
   const [notes, setNotes] = useState('');
   const [startAt, setStartAt] = useState('');
@@ -316,7 +322,7 @@ function TaskModal({
   const [recurrence, setRecurrence] = useState<'once' | 'weekly'>('once');
   const [weeklyInterval, setWeeklyInterval] = useState(1);
   const [weeklyDays, setWeeklyDays] = useState<number[]>([]);
-  const [services, setServices] = useState<{ id: string; name: string; priceCents: number }[]>([]);
+  const [services, setServices] = useState<{ id: string; name: string }[]>([]);
   const [teams, setTeams] = useState<{ id: string; name: string; colorHex: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -333,30 +339,49 @@ function TaskModal({
     load();
   }, []);
 
+  // Debounced customer search
   useEffect(() => {
-    if (serviceId && !priceOverridden) {
-      const svc = services.find((s) => s.id === serviceId);
-      if (svc) {
-        setServicePriceCents(svc.priceCents);
-      }
+    if (!customerQuery.trim() || customerQuery.length < 2) {
+      setCustomerSuggestions([]);
+      setShowSuggestions(false);
+      return;
     }
-    // If service cleared, keep price as-is (don't clear it)
-  }, [serviceId, services, priceOverridden]);
+
+    const timeoutId = setTimeout(async () => {
+      try {
+        const results = await import('@/lib/api').then((m) => m.customers.list(customerQuery));
+        setCustomerSuggestions(results);
+        setShowSuggestions(true);
+      } catch (err) {
+        setCustomerSuggestions([]);
+        setShowSuggestions(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timeoutId);
+  }, [customerQuery]);
+
+  // Service selection no longer auto-fills price
+  // Price must be manually entered for each task
 
   useEffect(() => {
     if (taskId) {
       tasks.get(taskId).then((task) => {
         setCustomerName(task.customerName);
+        setCustomerId(task.customerId);
+        setCustomerQuery(task.customerName);
+        setAddress(task.address ?? '');
+        setPhone(task.phone ?? '');
         setServiceId(task.serviceId ?? '');
         setServicePriceCents(task.servicePriceCents);
-        setPriceOverridden(task.servicePriceCents !== null);
-        setAddress(task.address ?? '');
+        setPriceDisplay(task.servicePriceCents !== null ? (task.servicePriceCents / 100).toFixed(2) : '');
         setDescription(task.description ?? '');
         setNotes(task.notes ?? '');
         setStartAt(task.startAt);
         setEndAt(task.endAt);
         setAllDay(task.allDay);
         setAssignedTeamId(task.assignedTeamId ?? '');
+        setCustomerManuallyEdited(task.customerId === null);
         if (task.rrule) {
           setRecurrence('weekly');
           const m = task.rrule.match(/INTERVAL=(\d+)/);
@@ -379,6 +404,14 @@ function TaskModal({
       dayEnd.setHours(17, 0, 0, 0);
       setStartAt(toIso(dayStart));
       setEndAt(toIso(dayEnd));
+      setPriceDisplay('');
+      setServicePriceCents(null);
+      setCustomerName('');
+      setCustomerId(null);
+      setCustomerQuery('');
+      setAddress('');
+      setPhone('');
+      setCustomerManuallyEdited(false);
     }
   }, [taskId, date]);
 
@@ -401,6 +434,8 @@ function TaskModal({
       }
       const payload = {
         customerName,
+        customerId: customerId || undefined,
+        phone: phone || undefined,
         serviceId: serviceId || undefined,
         servicePriceCents: servicePriceCents ?? undefined,
         address: address || undefined,
@@ -448,32 +483,90 @@ function TaskModal({
               {error}
             </div>
           )}
-          <div>
+          <div className="relative">
             <label className="mb-1 block text-sm font-medium">Customer name *</label>
             <input
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
+              type="text"
+              value={customerQuery}
+              onChange={(e) => {
+                const val = e.target.value;
+                setCustomerQuery(val);
+                setCustomerName(val);
+                // If user manually edits (not selecting from suggestions), clear customer link
+                const hadCustomerId = customerId !== null;
+                if (hadCustomerId) {
+                  setCustomerId(null);
+                  setAddress('');
+                  setPhone('');
+                }
+                setCustomerManuallyEdited(true);
+              }}
+              onFocus={() => {
+                if (customerQuery.length >= 2) {
+                  setShowSuggestions(true);
+                }
+              }}
+              onBlur={() => {
+                // Delay hiding suggestions to allow clicking
+                setTimeout(() => setShowSuggestions(false), 200);
+              }}
               className="w-full rounded border border-gray-300 px-3 py-2"
               required
+              placeholder="Start typing customer name..."
+            />
+            {showSuggestions && customerSuggestions.length > 0 && (
+              <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded border border-gray-200 bg-white shadow-lg">
+                {customerSuggestions.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => {
+                      setCustomerName(c.fullName);
+                      setCustomerQuery(c.fullName);
+                      setCustomerId(c.id);
+                      setAddress(c.address);
+                      setPhone(c.phone);
+                      setCustomerManuallyEdited(false);
+                      setShowSuggestions(false);
+                    }}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
+                  >
+                    <div className="font-medium">{c.fullName}</div>
+                    <div className="text-xs text-gray-500">{c.address}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+            {showSuggestions && customerQuery.length >= 2 && customerSuggestions.length === 0 && (
+              <div className="absolute z-50 mt-1 w-full rounded border border-gray-200 bg-white px-4 py-2 text-sm text-gray-500 shadow-lg">
+                No matches found
+              </div>
+            )}
+            {customerId && (
+              <div className="mt-1 text-xs text-blue-600">Linked to customer</div>
+            )}
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium">Phone</label>
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className="w-full rounded border border-gray-300 px-3 py-2"
+              placeholder="Phone number"
             />
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">Service</label>
             <select
               value={serviceId}
-              onChange={(e) => {
-                const newServiceId = e.target.value;
-                setServiceId(newServiceId);
-                if (newServiceId) {
-                  setPriceOverridden(false);
-                }
-              }}
+              onChange={(e) => setServiceId(e.target.value)}
               className="w-full rounded border border-gray-300 px-3 py-2"
             >
               <option value="">—</option>
               {services.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name} (${(s.priceCents / 100).toFixed(2)})
+                  {s.name}
                 </option>
               ))}
             </select>
@@ -484,21 +577,45 @@ function TaskModal({
               type="number"
               step="0.01"
               min="0"
-              value={servicePriceCents !== null ? (servicePriceCents / 100).toFixed(2) : ''}
+              inputMode="decimal"
+              value={priceDisplay}
               onChange={(e) => {
                 const val = e.target.value;
-                if (val === '') {
+                setPriceDisplay(val);
+                if (val === '' || val === '.') {
                   setServicePriceCents(null);
                 } else {
-                  const cents = Math.round(parseFloat(val) * 100);
-                  if (!isNaN(cents) && cents >= 0) {
+                  const num = parseFloat(val);
+                  if (!isNaN(num) && num >= 0) {
+                    // Convert dollars to cents (round to avoid floating point issues)
+                    const cents = Math.round(num * 100);
                     setServicePriceCents(cents);
-                    setPriceOverridden(true);
+                  } else {
+                    setServicePriceCents(null);
+                  }
+                }
+              }}
+              onBlur={(e) => {
+                const val = e.target.value.trim();
+                if (val === '' || val === '.') {
+                  setPriceDisplay('');
+                  setServicePriceCents(null);
+                } else {
+                  const num = parseFloat(val);
+                  if (!isNaN(num) && num >= 0) {
+                    // Format to 2 decimal places on blur and ensure cents are correct
+                    const formatted = num.toFixed(2);
+                    setPriceDisplay(formatted);
+                    const cents = Math.round(num * 100);
+                    setServicePriceCents(cents);
+                  } else {
+                    setPriceDisplay('');
+                    setServicePriceCents(null);
                   }
                 }
               }}
               className="w-full rounded border border-gray-300 px-3 py-2"
-              placeholder="Auto-filled from service"
+              placeholder="Enter price"
             />
           </div>
           <div>
