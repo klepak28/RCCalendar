@@ -101,10 +101,10 @@ export default function CalendarPage() {
           </h2>
         </div>
         <Link
-          href="/settings/users"
+          href="/settings"
           className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50"
         >
-          Settings → Users
+          Settings
         </Link>
       </div>
 

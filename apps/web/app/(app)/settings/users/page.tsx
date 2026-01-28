@@ -36,10 +36,7 @@ export default function SettingsUsersPage() {
   }
 
   return (
-    <div className="p-6">
-      <h1 className="mb-6 text-2xl font-semibold text-gray-800">
-        Settings → Users
-      </h1>
+    <div>
       <p className="mb-6 text-sm text-gray-600">
         Create new users. All users have full access (everyone sees and manages all tasks).
       </p>

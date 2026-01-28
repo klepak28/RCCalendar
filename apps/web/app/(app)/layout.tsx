@@ -60,22 +60,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               Calendar
             </Link>
             <Link
-              href="/settings/services"
-              className={`rounded px-2 py-1 ${pathname === '/settings/services' ? 'bg-gray-100 font-medium' : 'hover:bg-gray-100'}`}
+              href="/settings"
+              className={`rounded px-2 py-1 ${pathname?.startsWith('/settings') ? 'bg-gray-100 font-medium' : 'hover:bg-gray-100'}`}
             >
-              Settings → Services
-            </Link>
-            <Link
-              href="/settings/teams"
-              className={`rounded px-2 py-1 ${pathname === '/settings/teams' ? 'bg-gray-100 font-medium' : 'hover:bg-gray-100'}`}
-            >
-              Settings → Teams
-            </Link>
-            <Link
-              href="/settings/users"
-              className={`rounded px-2 py-1 ${pathname === '/settings/users' ? 'bg-gray-100 font-medium' : 'hover:bg-gray-100'}`}
-            >
-              Settings → Users
+              Settings
             </Link>
           </nav>
         </div>
