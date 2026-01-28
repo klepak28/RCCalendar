@@ -152,7 +152,7 @@ export default function CalendarPage() {
                           key={`${o.taskId}-${o.occurrenceStart}`}
                           className="task-pill truncate"
                           style={{
-                            backgroundColor: o.team?.colorHex ?? '#6b7280',
+                            backgroundColor: o.assignedTeam?.colorHex ?? '#6b7280',
                           }}
                           title={o.customerName}
                         >
@@ -240,7 +240,7 @@ function DayDrawer({
                     {o.customerName}
                   </div>
                   <div className="text-xs text-gray-500">
-                    {o.service.name} · {o.createdBy.username}
+                    {o.service?.name ?? 'No service'} · {o.servicePriceCents !== null ? `$${(o.servicePriceCents / 100).toFixed(2)}` : '—'} · {o.createdBy.username}
                   </div>
                 </div>
                 <button
@@ -281,6 +281,10 @@ function DayDrawer({
   );
 }
 
+function toIso(d: Date | string): string {
+  return (d instanceof Date ? d : new Date(d)).toISOString();
+}
+
 function toLocalDatetime(iso: string): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, '0');
@@ -300,13 +304,15 @@ function TaskModal({
 }) {
   const [customerName, setCustomerName] = useState('');
   const [serviceId, setServiceId] = useState('');
+  const [servicePriceCents, setServicePriceCents] = useState<number | null>(null);
+  const [priceOverridden, setPriceOverridden] = useState(false);
   const [address, setAddress] = useState('');
   const [description, setDescription] = useState('');
   const [notes, setNotes] = useState('');
   const [startAt, setStartAt] = useState('');
   const [endAt, setEndAt] = useState('');
   const [allDay, setAllDay] = useState(false);
-  const [teamId, setTeamId] = useState('');
+  const [assignedTeamId, setAssignedTeamId] = useState('');
   const [recurrence, setRecurrence] = useState<'once' | 'weekly'>('once');
   const [weeklyInterval, setWeeklyInterval] = useState(1);
   const [weeklyDays, setWeeklyDays] = useState<number[]>([]);
@@ -323,23 +329,34 @@ function TaskModal({
       ]);
       setServices(s);
       setTeams(t);
-      if (s.length && !serviceId) setServiceId(s[0].id);
     };
     load();
   }, []);
 
   useEffect(() => {
+    if (serviceId && !priceOverridden) {
+      const svc = services.find((s) => s.id === serviceId);
+      if (svc) {
+        setServicePriceCents(svc.priceCents);
+      }
+    }
+    // If service cleared, keep price as-is (don't clear it)
+  }, [serviceId, services, priceOverridden]);
+
+  useEffect(() => {
     if (taskId) {
       tasks.get(taskId).then((task) => {
         setCustomerName(task.customerName);
-        setServiceId(task.serviceId);
+        setServiceId(task.serviceId ?? '');
+        setServicePriceCents(task.servicePriceCents);
+        setPriceOverridden(task.servicePriceCents !== null);
         setAddress(task.address ?? '');
         setDescription(task.description ?? '');
         setNotes(task.notes ?? '');
         setStartAt(task.startAt);
         setEndAt(task.endAt);
         setAllDay(task.allDay);
-        setTeamId(task.teamId ?? '');
+        setAssignedTeamId(task.assignedTeamId ?? '');
         if (task.rrule) {
           setRecurrence('weekly');
           const m = task.rrule.match(/INTERVAL=(\d+)/);
@@ -360,8 +377,8 @@ function TaskModal({
       dayStart.setHours(9, 0, 0, 0);
       const dayEnd = new Date(date);
       dayEnd.setHours(17, 0, 0, 0);
-      setStartAt(dayStart.toISOString());
-      setEndAt(dayEnd.toISOString());
+      setStartAt(toIso(dayStart));
+      setEndAt(toIso(dayEnd));
     }
   }, [taskId, date]);
 
@@ -384,14 +401,15 @@ function TaskModal({
       }
       const payload = {
         customerName,
-        serviceId,
+        serviceId: serviceId || undefined,
+        servicePriceCents: servicePriceCents ?? undefined,
         address: address || undefined,
         description: description || undefined,
         notes: notes || undefined,
-        startAt: start.toISOString(),
-        endAt: end.toISOString(),
+        startAt: toIso(start),
+        endAt: toIso(end),
         allDay,
-        teamId: teamId || undefined,
+        assignedTeamId: assignedTeamId || undefined,
         ...(rrule !== undefined && { rrule }),
       };
       if (taskId) {
@@ -440,19 +458,48 @@ function TaskModal({
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Service *</label>
+            <label className="mb-1 block text-sm font-medium">Service</label>
             <select
               value={serviceId}
-              onChange={(e) => setServiceId(e.target.value)}
+              onChange={(e) => {
+                const newServiceId = e.target.value;
+                setServiceId(newServiceId);
+                if (newServiceId) {
+                  setPriceOverridden(false);
+                }
+              }}
               className="w-full rounded border border-gray-300 px-3 py-2"
-              required
             >
+              <option value="">—</option>
               {services.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name} (${(s.priceCents / 100).toFixed(2)})
                 </option>
               ))}
             </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium">Price ($)</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={servicePriceCents !== null ? (servicePriceCents / 100).toFixed(2) : ''}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === '') {
+                  setServicePriceCents(null);
+                } else {
+                  const cents = Math.round(parseFloat(val) * 100);
+                  if (!isNaN(cents) && cents >= 0) {
+                    setServicePriceCents(cents);
+                    setPriceOverridden(true);
+                  }
+                }
+              }}
+              className="w-full rounded border border-gray-300 px-3 py-2"
+              placeholder="Auto-filled from service"
+            />
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">Address</label>
@@ -484,7 +531,7 @@ function TaskModal({
               <input
                 type="datetime-local"
                 value={startAt ? toLocalDatetime(startAt) : ''}
-                onChange={(e) => setStartAt(new Date(e.target.value).toISOString())}
+                onChange={(e) => setStartAt(toIso(new Date(e.target.value)))}
                 className="w-full rounded border border-gray-300 px-3 py-2"
               />
             </div>
@@ -493,7 +540,7 @@ function TaskModal({
               <input
                 type="datetime-local"
                 value={endAt ? toLocalDatetime(endAt) : ''}
-                onChange={(e) => setEndAt(new Date(e.target.value).toISOString())}
+                onChange={(e) => setEndAt(toIso(new Date(e.target.value)))}
                 className="w-full rounded border border-gray-300 px-3 py-2"
               />
             </div>
@@ -508,10 +555,10 @@ function TaskModal({
             <label htmlFor="allDay" className="text-sm">All day</label>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Team</label>
+            <label className="mb-1 block text-sm font-medium">Assigned Team</label>
             <select
-              value={teamId}
-              onChange={(e) => setTeamId(e.target.value)}
+              value={assignedTeamId}
+              onChange={(e) => setAssignedTeamId(e.target.value)}
               className="w-full rounded border border-gray-300 px-3 py-2"
             >
               <option value="">—</option>

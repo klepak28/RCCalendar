@@ -32,15 +32,15 @@ export type TaskOccurrence = {
   occurrenceStart: string;
   occurrenceEnd: string;
   customerName: string;
-  serviceId: string;
-  service: Service;
-  servicePrice: number;
+  serviceId: string | null;
+  service: Service | null;
+  servicePriceCents: number | null;
   address: string | null;
   description: string | null;
   notes: string | null;
   allDay: boolean;
-  teamId: string | null;
-  team: Team | null;
+  assignedTeamId: string | null;
+  assignedTeam: Team | null;
   createdById: string;
   createdBy: { id: string; username: string };
   rrule: string | null;
@@ -49,17 +49,17 @@ export type TaskOccurrence = {
 export type TaskRecord = {
   id: string;
   customerName: string;
-  serviceId: string;
-  service: Service;
-  servicePrice: number;
+  serviceId: string | null;
+  service: Service | null;
+  servicePriceCents: number | null;
   address: string | null;
   description: string | null;
   notes: string | null;
   startAt: string;
   endAt: string;
   allDay: boolean;
-  teamId: string | null;
-  team: Team | null;
+  assignedTeamId: string | null;
+  assignedTeam: Team | null;
   createdById: string;
   createdBy: { id: string; username: string };
   rrule: string | null;
@@ -129,14 +129,15 @@ export const tasks = {
   get: (id: string) => api<TaskRecord>(`/api/tasks/${id}`),
   create: (d: {
     customerName: string;
-    serviceId: string;
+    serviceId?: string;
+    servicePriceCents?: number;
     address?: string;
     description?: string;
     notes?: string;
     startAt: string;
     endAt: string;
     allDay?: boolean;
-    teamId?: string;
+    assignedTeamId?: string;
     rrule?: string;
   }) => api<unknown>('/api/tasks', { method: 'POST', body: JSON.stringify(d) }),
   update: (id: string, d: Record<string, unknown>) =>

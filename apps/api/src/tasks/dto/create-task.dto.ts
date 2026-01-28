@@ -4,35 +4,54 @@ import {
   IsOptional,
   IsBoolean,
   IsISO8601,
+  IsInt,
+  Min,
+  ValidateIf,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 export class CreateTaskDto {
   @IsString()
   @MinLength(1)
   customerName: string;
 
+  @IsOptional()
   @IsString()
+  @ValidateIf((o) => o.serviceId !== null && o.serviceId !== '')
   @MinLength(1)
-  serviceId: string;
+  serviceId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'string') {
+      const parsed = parseFloat(value);
+      return isNaN(parsed) ? null : Math.round(parsed);
+    }
+    return typeof value === 'number' ? Math.round(value) : null;
+  })
+  @ValidateIf((o) => o.servicePriceCents !== null && o.servicePriceCents !== undefined)
+  @IsInt()
+  @Min(0)
+  servicePriceCents?: number | null;
 
   @IsOptional()
   @IsString()
-  address?: string;
+  address?: string | null;
 
   @IsOptional()
   @IsString()
-  description?: string;
+  description?: string | null;
 
   @IsOptional()
   @IsString()
-  notes?: string;
+  notes?: string | null;
 
   @IsISO8601()
-  startAt: string;
+  startAt!: string;
 
   @IsISO8601()
-  endAt: string;
+  endAt!: string;
 
   @IsOptional()
   @IsBoolean()
@@ -41,9 +60,10 @@ export class CreateTaskDto {
 
   @IsOptional()
   @IsString()
-  teamId?: string;
+  @ValidateIf((o) => o.assignedTeamId !== null && o.assignedTeamId !== '')
+  assignedTeamId?: string | null;
 
   @IsOptional()
   @IsString()
-  rrule?: string;
+  rrule?: string | null;
 }

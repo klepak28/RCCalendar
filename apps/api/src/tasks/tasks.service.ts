@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { rrulestr } from 'rrule';
 import { addMilliseconds, differenceInMilliseconds } from 'date-fns';
 import { PrismaService } from '../prisma/prisma.service';
@@ -10,15 +10,15 @@ export interface TaskOccurrence {
   occurrenceStart: string; // ISO
   occurrenceEnd: string;   // ISO
   customerName: string;
-  serviceId: string;
-  service: { id: string; name: string; priceCents: number };
-  servicePrice: number;
+  serviceId: string | null;
+  service: { id: string; name: string; priceCents: number } | null;
+  servicePriceCents: number | null;
   address: string | null;
   description: string | null;
   notes: string | null;
   allDay: boolean;
-  teamId: string | null;
-  team: { id: string; name: string; colorHex: string } | null;
+  assignedTeamId: string | null;
+  assignedTeam: { id: string; name: string; colorHex: string } | null;
   createdById: string;
   createdBy: { id: string; username: string };
   rrule: string | null;
@@ -26,7 +26,40 @@ export interface TaskOccurrence {
 
 @Injectable()
 export class TasksService {
+  private readonly logger = new Logger(TasksService.name);
+  private readonly isDev = process.env.NODE_ENV !== 'production';
+
   constructor(private prisma: PrismaService) {}
+
+  private normalizeOptional<T>(value: T | undefined | null): T | null {
+    return value === undefined ? null : value;
+  }
+
+  private normalizePrice(value: number | string | null | undefined): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    let num: number;
+    if (typeof value === 'string') {
+      const parsed = parseFloat(value);
+      if (isNaN(parsed)) {
+        throw new BadRequestException('Invalid price format');
+      }
+      num = parsed;
+    } else {
+      num = value;
+    }
+    if (num < 0) {
+      throw new BadRequestException('Price must be >= 0');
+    }
+    return Math.round(num);
+  }
+
+  private normalizeString(value: string | null | undefined): string | null {
+    if (value === null || value === undefined) return null;
+    const trimmed = value.trim();
+    return trimmed === '' ? null : trimmed;
+  }
 
   private getDurationMs(task: { startAt: Date; endAt: Date }): number {
     return differenceInMilliseconds(task.endAt, task.startAt);
@@ -39,14 +72,14 @@ export class TasksService {
       endAt: Date;
       allDay: boolean;
       customerName: string;
-      serviceId: string;
-      service: { id: string; name: string; priceCents: number };
-      servicePrice: number;
+      serviceId: string | null;
+      service: { id: string; name: string; priceCents: number } | null;
+      servicePriceCents: number | null;
       address: string | null;
       description: string | null;
       notes: string | null;
-      teamId: string | null;
-      team: { id: string; name: string; colorHex: string } | null;
+      assignedTeamId: string | null;
+      assignedTeam: { id: string; name: string; colorHex: string } | null;
       createdById: string;
       createdBy: { id: string; username: string };
       rrule: string | null;
@@ -64,13 +97,13 @@ export class TasksService {
             customerName: task.customerName,
             serviceId: task.serviceId,
             service: task.service,
-            servicePrice: task.servicePrice,
+            servicePriceCents: task.servicePriceCents,
             address: task.address,
             description: task.description,
             notes: task.notes,
             allDay: task.allDay,
-            teamId: task.teamId,
-            team: task.team,
+            assignedTeamId: task.assignedTeamId,
+            assignedTeam: task.assignedTeam,
             createdById: task.createdById,
             createdBy: task.createdBy,
             rrule: null,
@@ -98,13 +131,13 @@ export class TasksService {
         customerName: task.customerName,
         serviceId: task.serviceId,
         service: task.service,
-        servicePrice: task.servicePrice,
+        servicePriceCents: task.servicePriceCents,
         address: task.address,
         description: task.description,
         notes: task.notes,
         allDay: task.allDay,
-        teamId: task.teamId,
-        team: task.team,
+        assignedTeamId: task.assignedTeamId,
+        assignedTeam: task.assignedTeam,
         createdById: task.createdById,
         createdBy: task.createdBy,
         rrule: task.rrule,
@@ -122,13 +155,20 @@ export class TasksService {
       },
       include: {
         service: true,
-        team: true,
+        assignedTeam: true,
         createdBy: { select: { id: true, username: true } },
       },
     });
     const out: TaskOccurrence[] = [];
     for (const t of tasks) {
-      out.push(...this.expandRecurring(t, from, to));
+      out.push(...this.expandRecurring(
+        {
+          ...t,
+          servicePriceCents: t.servicePriceCents ?? (t.service?.priceCents ?? null),
+        },
+        from,
+        to,
+      ));
     }
     return out.sort(
       (a, b) =>
@@ -141,60 +181,174 @@ export class TasksService {
     userId: string,
     dto: CreateTaskDto,
   ) {
-    const service = await this.prisma.service.findUniqueOrThrow({
-      where: { id: dto.serviceId },
-    });
-    return this.prisma.task.create({
-      data: {
-        customerName: dto.customerName,
-        serviceId: dto.serviceId,
-        servicePrice: service.priceCents,
-        address: dto.address ?? undefined,
-        description: dto.description ?? undefined,
-        notes: dto.notes ?? undefined,
-        startAt: new Date(dto.startAt),
-        endAt: new Date(dto.endAt),
-        allDay: dto.allDay ?? false,
-        teamId: dto.teamId ?? undefined,
-        createdById: userId,
-        rrule: dto.rrule ?? undefined,
-      },
-      include: {
-        service: true,
-        team: true,
-        createdBy: { select: { id: true, username: true } },
-      },
-    });
+    if (!userId) {
+      throw new BadRequestException('User ID is required');
+    }
+
+    // Convert ISO-8601 strings to Date objects
+    const startAt = new Date(dto.startAt);
+    const endAt = new Date(dto.endAt);
+
+    // Validate dates
+    if (isNaN(startAt.getTime())) {
+      throw new BadRequestException('Invalid startAt date');
+    }
+    if (isNaN(endAt.getTime())) {
+      throw new BadRequestException('Invalid endAt date');
+    }
+    if (endAt <= startAt) {
+      throw new BadRequestException('endAt must be after startAt');
+    }
+
+    // Normalize serviceId
+    const normalizedServiceId = this.normalizeString(dto.serviceId);
+
+    // Normalize and validate price
+    let servicePriceCents: number | null = this.normalizePrice(dto.servicePriceCents);
+    
+    // Auto-fill price from service if not provided
+    if (normalizedServiceId) {
+      try {
+        const service = await this.prisma.service.findUniqueOrThrow({
+          where: { id: normalizedServiceId },
+        });
+        if (servicePriceCents === null) {
+          servicePriceCents = service.priceCents;
+        }
+      } catch (error) {
+        if (this.isDev) {
+          this.logger.error(`Failed to fetch service ${normalizedServiceId}:`, error);
+        }
+        throw new BadRequestException(`Service not found: ${normalizedServiceId}`);
+      }
+    }
+
+    // Normalize all optional fields
+    const normalizedData = {
+      customerName: dto.customerName.trim(),
+      serviceId: normalizedServiceId,
+      servicePriceCents,
+      address: this.normalizeString(dto.address),
+      description: this.normalizeString(dto.description),
+      notes: this.normalizeString(dto.notes),
+      startAt,
+      endAt,
+      allDay: dto.allDay ?? false,
+      assignedTeamId: this.normalizeString(dto.assignedTeamId),
+      createdById: userId,
+      rrule: this.normalizeString(dto.rrule),
+    };
+
+    if (this.isDev) {
+      this.logger.debug('Creating task with normalized data:', {
+        ...normalizedData,
+        startAt: normalizedData.startAt.toISOString(),
+        endAt: normalizedData.endAt.toISOString(),
+      });
+    }
+
+    try {
+      return await this.prisma.task.create({
+        data: normalizedData,
+        include: {
+          service: true,
+          assignedTeam: true,
+          createdBy: { select: { id: true, username: true } },
+        },
+      });
+    } catch (error) {
+      if (this.isDev) {
+        this.logger.error('Prisma create error:', error);
+        if (error instanceof Error) {
+          this.logger.error('Stack:', error.stack);
+        }
+      }
+      throw error;
+    }
   }
 
   async update(id: string, dto: UpdateTaskDto) {
     const existing = await this.prisma.task.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Task not found');
-    let servicePrice = existing.servicePrice;
-    if (dto.serviceId && dto.serviceId !== existing.serviceId) {
-      const svc = await this.prisma.service.findUniqueOrThrow({
-        where: { id: dto.serviceId },
-      });
-      servicePrice = svc.priceCents;
+    let servicePriceCents: number | null | undefined = dto.servicePriceCents;
+    const normalizedServiceId = dto.serviceId !== undefined 
+      ? ((dto.serviceId && dto.serviceId.trim()) ? dto.serviceId : null)
+      : undefined;
+    if (normalizedServiceId !== undefined) {
+      if (normalizedServiceId) {
+        const svc = await this.prisma.service.findUniqueOrThrow({
+          where: { id: normalizedServiceId },
+        });
+        if (servicePriceCents === null || servicePriceCents === undefined) {
+          servicePriceCents = svc.priceCents;
+        }
+      }
+      // If serviceId cleared (null/empty), keep servicePriceCents as-is (don't change it)
+    } else if (servicePriceCents === undefined) {
+      servicePriceCents = existing.servicePriceCents;
     }
+    const updateData: {
+        customerName?: string;
+        serviceId?: string | null;
+        servicePriceCents?: number | null;
+        address?: string | null;
+        description?: string | null;
+        notes?: string | null;
+        startAt?: Date;
+        endAt?: Date;
+        allDay?: boolean;
+        assignedTeamId?: string | null;
+        rrule?: string | null;
+      } = {};
+    
+    if (dto.customerName !== undefined) updateData.customerName = dto.customerName;
+    if (normalizedServiceId !== undefined) updateData.serviceId = normalizedServiceId;
+    if (servicePriceCents !== undefined) updateData.servicePriceCents = servicePriceCents;
+    if (dto.address !== undefined) updateData.address = dto.address ?? null;
+    if (dto.description !== undefined) updateData.description = dto.description ?? null;
+    if (dto.notes !== undefined) updateData.notes = dto.notes ?? null;
+    
+    // Handle date updates with validation
+    if (dto.startAt !== undefined) {
+      const startAt = new Date(dto.startAt);
+      if (isNaN(startAt.getTime())) {
+        throw new BadRequestException('Invalid startAt date');
+      }
+      updateData.startAt = startAt;
+    }
+    if (dto.endAt !== undefined) {
+      const endAt = new Date(dto.endAt);
+      if (isNaN(endAt.getTime())) {
+        throw new BadRequestException('Invalid endAt date');
+      }
+      updateData.endAt = endAt;
+    }
+    
+    // Validate endAt > startAt if both are being updated
+    if (updateData.startAt && updateData.endAt) {
+      if (updateData.endAt <= updateData.startAt) {
+        throw new BadRequestException('endAt must be after startAt');
+      }
+    } else if (updateData.startAt && existing.endAt) {
+      if (existing.endAt <= updateData.startAt) {
+        throw new BadRequestException('endAt must be after startAt');
+      }
+    } else if (updateData.endAt && existing.startAt) {
+      if (updateData.endAt <= existing.startAt) {
+        throw new BadRequestException('endAt must be after startAt');
+      }
+    }
+    
+    if (dto.allDay !== undefined) updateData.allDay = dto.allDay;
+    if (dto.assignedTeamId !== undefined) updateData.assignedTeamId = (dto.assignedTeamId && dto.assignedTeamId.trim()) ? dto.assignedTeamId : null;
+    if (dto.rrule !== undefined) updateData.rrule = dto.rrule;
+
     return this.prisma.task.update({
       where: { id },
-      data: {
-        customerName: dto.customerName ?? undefined,
-        serviceId: dto.serviceId ?? undefined,
-        servicePrice,
-        address: dto.address ?? undefined,
-        description: dto.description ?? undefined,
-        notes: dto.notes ?? undefined,
-        startAt: dto.startAt ? new Date(dto.startAt) : undefined,
-        endAt: dto.endAt ? new Date(dto.endAt) : undefined,
-        allDay: dto.allDay ?? undefined,
-        teamId: dto.teamId ?? undefined,
-        rrule: dto.rrule === undefined ? undefined : dto.rrule,
-      },
+      data: updateData,
       include: {
         service: true,
-        team: true,
+        assignedTeam: true,
         createdBy: { select: { id: true, username: true } },
       },
     });
@@ -205,7 +359,7 @@ export class TasksService {
       where: { id },
       include: {
         service: true,
-        team: true,
+        assignedTeam: true,
         createdBy: { select: { id: true, username: true } },
       },
     });

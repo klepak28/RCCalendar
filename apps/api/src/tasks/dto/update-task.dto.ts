@@ -4,6 +4,8 @@ import {
   IsOptional,
   IsBoolean,
   IsISO8601,
+  IsInt,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -15,8 +17,14 @@ export class UpdateTaskDto {
 
   @IsOptional()
   @IsString()
-  @MinLength(1)
-  serviceId?: string;
+  @Type(() => String)
+  serviceId?: string | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  servicePriceCents?: number | null;
 
   @IsOptional()
   @IsString()
@@ -45,7 +53,7 @@ export class UpdateTaskDto {
 
   @IsOptional()
   @IsString()
-  teamId?: string;
+  assignedTeamId?: string | null;
 
   @IsOptional()
   @IsString()

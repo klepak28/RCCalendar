@@ -23,10 +23,14 @@ async function main() {
     { name: 'Window cleaning', priceCents: 12000 },
   ];
   for (const s of services) {
-    const exists = await prisma.service.findFirst({ where: { name: s.name } });
-    if (!exists) await prisma.service.create({ data: s });
+    await prisma.service.upsert({
+      where: { name: s.name },
+      update: {},
+      create: s,
+    });
   }
   console.log('Seeded services');
+  // Teams: seed creates 0 teams by default
 }
 
 main()

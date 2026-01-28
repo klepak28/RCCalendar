@@ -20,7 +20,7 @@ model User {
 
 model Service {
   id         String   @id @default(cuid())
-  name       String
+  name       String   @unique
   priceCents Int
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -29,7 +29,7 @@ model Service {
 
 model Team {
   id        String   @id @default(cuid())
-  name      String
+  name      String   @unique
   colorHex  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -37,22 +37,22 @@ model Team {
 }
 
 model Task {
-  id           String   @id @default(cuid())
-  customerName String
-  serviceId    String
-  service      Service  @relation(fields: [serviceId], references: [id])
-  servicePrice Int      // cached from service at creation (cents)
-  address      String?
-  description  String?
-  notes        String?
-  startAt      DateTime
-  endAt        DateTime
-  allDay       Boolean  @default(false)
-  teamId       String?
-  team         Team?    @relation(fields: [teamId], references: [id])
-  createdById  String
-  createdBy    User     @relation(fields: [createdById], references: [id])
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  rrule        String?  // iCalendar RRULE; null = one-time
+  id                String   @id @default(cuid())
+  customerName      String
+  serviceId         String?
+  service           Service? @relation(fields: [serviceId], references: [id])
+  servicePriceCents Int?     // per-task price override (cents); if null and serviceId set, defaults to Service.priceCents
+  address           String?
+  description       String?
+  notes             String?
+  startAt           DateTime
+  endAt             DateTime
+  allDay            Boolean  @default(false)
+  assignedTeamId    String?
+  assignedTeam      Team?    @relation(fields: [assignedTeamId], references: [id])
+  createdById       String
+  createdBy         User     @relation(fields: [createdById], references: [id])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  rrule             String?  // iCalendar RRULE; null = one-time
 }
