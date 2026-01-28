@@ -13,7 +13,7 @@ cd RCCalendar
 pnpm install
 ```
 
-### If Prisma or install is broken (e.g. MODULE_NOT_FOUND / “prisma not found”)
+### If Prisma, Next.js, or install is broken (e.g. MODULE_NOT_FOUND / “prisma not found” / Next dev fails)
 
 Run a clean reinstall from the repo root (PowerShell):
 
@@ -25,6 +25,17 @@ This removes `node_modules`, `apps/web/.next`, `apps/api/dist`, prunes the pnpm 
 
 ```powershell
 .\scripts\clean-prisma.ps1 -KillNode
+```
+
+Or manually:
+
+```bash
+# From repo root
+Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force apps\web\.next -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force apps\api\dist -ErrorAction SilentlyContinue
+pnpm store prune
+pnpm install
 ```
 
 Then run:
@@ -90,10 +101,10 @@ pnpm dev:api
 pnpm dev:web
 ```
 
-- **API:** http://localhost:4000  
+- **API:** http://localhost:3001 (default; set `PORT` in `apps/api/.env` to override)  
 - **Web:** http://localhost:3000  
 
-The Next.js dev server rewrites `/api/*` to the backend, so the app at http://localhost:3000 talks to the API via the same origin.
+The Next.js dev server rewrites `/api/*` to the backend (port 3001 by default), so the app at http://localhost:3000 talks to the API via the same origin.
 
 ## 6. First login
 
@@ -121,7 +132,9 @@ Create more users from **Settings → Users** (any logged-in user can do this).
 ## Troubleshooting
 
 - **“Database does not exist”** – Create the DB and user (step 2) and check `DATABASE_URL`.
-- **“Port 4000 in use”** – Set `PORT` in `apps/api/.env` or stop the process using 4000.
+- **“Port 3001 in use”** – Set `PORT` in `apps/api/.env` or stop the process using 3001.
 - **CORS / 401 on login** – Ensure `CORS_ORIGIN` in `.env` matches the frontend origin (e.g. `http://localhost:3000`).
 - **Prisma “schema not in sync”** – Run `pnpm db:migrate` from the repo root (or `pnpm run prisma:migrate` in `apps/api`).
 - **MODULE_NOT_FOUND / “prisma not found”** – Run `.\scripts\clean-prisma.ps1` from the repo root, then `pnpm db:generate`.
+- **Next.js dev fails (e.g. “Cannot find module” / requireStack)** – Web uses Next 15 + React 18.2. Pin versions in `apps/web/package.json`, then clean reinstall: remove `node_modules` and `apps/web/.next`, run `pnpm store prune`, then `pnpm install`. See “If Prisma, Next.js, or install is broken” above.
+- **API “No driver (HTTP) has been selected”** – Ensure `@nestjs/platform-express` is installed: from repo root run `pnpm install`, or from `apps/api` run `pnpm add @nestjs/platform-express`. The API uses `new ExpressAdapter()` in `main.ts` to select the Express driver; if the package is missing, add it and run a clean install.
