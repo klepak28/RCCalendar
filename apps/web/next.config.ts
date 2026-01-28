@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   output: process.env.NODE_ENV === 'production' ? 'standalone' : undefined,
   async rewrites() {
     return [
-      { source: '/api/:path*', destination: 'http://localhost:3001/api/:path*' },
+      { source: '/api/:path*', destination: 'http://127.0.0.1:55556/api/:path*' },
     ];
   },
 };

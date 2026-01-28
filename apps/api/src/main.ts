@@ -11,8 +11,9 @@ async function bootstrap() {
     origin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
     credentials: true,
   });
-  const port = process.env.PORT ?? 3001;
-  await app.listen(port);
-  console.log(`API listening on http://localhost:${port}`);
+  const port = Number(process.env.PORT ?? 3101);
+  const host = process.env.HOST ?? '127.0.0.1';
+  await app.listen(port, host);
+  console.log(`API listening on http://${host}:${port}/api/health`);
 }
 bootstrap();

@@ -1,6 +1,18 @@
 {
   "name": "rccalendar",
   "private": true,
+  "pnpm": {
+    "packageExtensions": {
+      "busboy": {
+        "dependencies": {
+          "streamsearch": "1.1.0"
+        }
+      }
+    },
+    "overrides": {
+      "streamsearch": "1.1.0"
+    }
+  },
   "scripts": {
     "dev": "pnpm -r run dev --parallel",
     "dev:api": "pnpm --filter api run dev",
@@ -12,7 +24,8 @@
     "db:migrate": "pnpm --filter api run prisma:migrate",
     "db:migrate:deploy": "pnpm --filter api run prisma:migrate:deploy",
     "db:seed": "pnpm --filter api run prisma:seed",
-    "db:studio": "pnpm --filter api run prisma:studio"
+    "db:studio": "pnpm --filter api run prisma:studio",
+    "smoke:api": "pnpm --filter api run smoke"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --calendar-today: 59 130 246;
+  --calendar-border: 229 231 235;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+}
+
+.day-cell {
+  @apply min-h-[100px] border border-gray-200 bg-white p-1;
+}
+
+.day-cell.today {
+  @apply bg-blue-50 ring-1 ring-blue-300;
+}
+
+.task-pill {
+  @apply truncate rounded px-1.5 py-0.5 text-xs font-medium text-white;
+}
