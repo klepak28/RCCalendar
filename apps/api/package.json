@@ -12,7 +12,8 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
     "prisma:studio": "prisma studio",
-    "smoke": "node scripts/smoke.cjs"
+    "smoke": "node scripts/smoke.cjs",
+    "cleanup:rrule-exdate": "node scripts/cleanup-rrule-exdate.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

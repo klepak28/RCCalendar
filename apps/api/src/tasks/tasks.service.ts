@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
-import { rrulestr } from 'rrule';
+import { rrulestr, RRuleSet, RRule } from 'rrule';
 import { addMilliseconds, differenceInMilliseconds } from 'date-fns';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTaskDto } from './dto/create-task.dto';
@@ -67,6 +67,65 @@ export class TasksService {
     return differenceInMilliseconds(task.endAt, task.startAt);
   }
 
+  /**
+   * Parse RRULE string and extract RRULE and EXDATE parts
+   * Returns { rrule: string, exdates: Date[] }
+   */
+  private parseRruleWithExdate(rruleStr: string): { rrule: string; exdates: Date[] } {
+    const parts = rruleStr.split(';');
+    const rruleParts: string[] = [];
+    const exdates: Date[] = [];
+
+    for (const part of parts) {
+      if (part.startsWith('EXDATE=')) {
+        // Extract EXDATE values (can be comma-separated)
+        const exdateStr = part.substring(7); // Remove "EXDATE="
+        const exdateValues = exdateStr.split(',');
+        
+        for (const exdateValue of exdateValues) {
+          try {
+            // EXDATE format: YYYYMMDD or YYYYMMDDTHHMMSSZ
+            let dateStr = exdateValue.trim();
+            if (dateStr.length === 8) {
+              // YYYYMMDD format - convert to Date
+              const year = parseInt(dateStr.substring(0, 4), 10);
+              const month = parseInt(dateStr.substring(4, 6), 10) - 1; // 0-indexed
+              const day = parseInt(dateStr.substring(6, 8), 10);
+              const date = new Date(Date.UTC(year, month, day));
+              if (!isNaN(date.getTime())) {
+                exdates.push(date);
+              }
+            } else if (dateStr.length >= 15) {
+              // YYYYMMDDTHHMMSSZ format
+              const year = parseInt(dateStr.substring(0, 4), 10);
+              const month = parseInt(dateStr.substring(4, 6), 10) - 1;
+              const day = parseInt(dateStr.substring(6, 8), 10);
+              const hour = dateStr.length > 9 ? parseInt(dateStr.substring(9, 11), 10) : 0;
+              const minute = dateStr.length > 11 ? parseInt(dateStr.substring(11, 13), 10) : 0;
+              const second = dateStr.length > 13 ? parseInt(dateStr.substring(13, 15), 10) : 0;
+              const date = new Date(Date.UTC(year, month, day, hour, minute, second));
+              if (!isNaN(date.getTime())) {
+                exdates.push(date);
+              }
+            }
+          } catch (error) {
+            // Skip invalid EXDATE values
+            if (this.isDev) {
+              this.logger.warn(`Invalid EXDATE value: ${exdateValue}`);
+            }
+          }
+        }
+      } else {
+        rruleParts.push(part);
+      }
+    }
+
+    return {
+      rrule: rruleParts.join(';'),
+      exdates,
+    };
+  }
+
   private expandRecurring(
     task: {
       id: string;
@@ -118,65 +177,154 @@ export class TasksService {
       }
       return [];
     }
-    const durationMs = this.getDurationMs(task);
-    const dtstartStr = task.startAt
-      .toISOString()
-      .replace(/[-:]/g, '')
-      .replace(/\.\d{3}/, '')
-      .replace('Z', '') + 'Z';
-    const fullRule = `DTSTART:${dtstartStr}\nRRULE:${task.rrule}`;
-    const rule = rrulestr(fullRule);
-    const occDates = rule.between(from, to, true);
-    return occDates.map((d) => {
-      const start = new Date(d);
-      const end = addMilliseconds(start, durationMs);
-      return {
-        taskId: task.id,
-        occurrenceStart: start.toISOString(),
-        occurrenceEnd: end.toISOString(),
-        customerName: task.customerName,
-        customerId: task.customerId,
-        address: task.address,
-        phone: task.phone,
-        serviceId: task.serviceId,
-        service: task.service,
-        servicePriceCents: task.servicePriceCents,
-        description: task.description,
-        notes: task.notes,
-        allDay: task.allDay,
-        assignedTeamId: task.assignedTeamId,
-        assignedTeam: task.assignedTeam,
-        createdById: task.createdById,
-        createdBy: task.createdBy,
-        rrule: task.rrule,
-      };
-    });
+
+    try {
+      const durationMs = this.getDurationMs(task);
+      const dtstart = task.startAt;
+
+      // Parse RRULE and extract EXDATE if present
+      const { rrule: cleanRrule, exdates } = this.parseRruleWithExdate(task.rrule);
+
+      // Build the iCal string for parsing
+      const dtstartStr = dtstart
+        .toISOString()
+        .replace(/[-:]/g, '')
+        .replace(/\.\d{3}/, '')
+        .replace('Z', '') + 'Z';
+      
+      const fullRule = `DTSTART:${dtstartStr}\nRRULE:${cleanRrule}`;
+
+      // Use RRuleSet if we have EXDATE, otherwise use regular RRule
+      let rule: RRule | RRuleSet;
+      if (exdates.length > 0) {
+        // Parse the base RRULE (without EXDATE)
+        const baseRule = rrulestr(fullRule) as RRule;
+        // Create RRuleSet and add exclusions
+        const ruleSet = new RRuleSet();
+        ruleSet.rrule(baseRule);
+        for (const exdate of exdates) {
+          ruleSet.exdate(exdate);
+        }
+        rule = ruleSet;
+        if (this.isDev) {
+          this.logger.debug(`Task ${task.id}: Using RRuleSet with ${exdates.length} EXDATE exclusion(s)`);
+        }
+      } else {
+        // No EXDATE, use regular parsing
+        rule = rrulestr(fullRule) as RRule;
+      }
+
+      const occDates = rule.between(from, to, true);
+      return occDates.map((d) => {
+        const start = new Date(d);
+        const end = addMilliseconds(start, durationMs);
+        return {
+          taskId: task.id,
+          occurrenceStart: start.toISOString(),
+          occurrenceEnd: end.toISOString(),
+          customerName: task.customerName,
+          customerId: task.customerId,
+          address: task.address,
+          phone: task.phone,
+          serviceId: task.serviceId,
+          service: task.service,
+          servicePriceCents: task.servicePriceCents,
+          description: task.description,
+          notes: task.notes,
+          allDay: task.allDay,
+          assignedTeamId: task.assignedTeamId,
+          assignedTeam: task.assignedTeam,
+          createdById: task.createdById,
+          createdBy: task.createdBy,
+          rrule: task.rrule,
+        };
+      });
+    } catch (error) {
+      // CRITICAL: Don't let one malformed recurrence break the entire request
+      if (this.isDev) {
+        this.logger.error(`Error expanding recurring task ${task.id}:`, error);
+        this.logger.error(`RRULE string: ${task.rrule}`);
+        if (error instanceof Error) {
+          this.logger.error(`Error stack: ${error.stack}`);
+        }
+      }
+      // Return empty array - this task won't appear in the calendar
+      // but the request will succeed
+      return [];
+    }
   }
 
   async getInRange(from: Date, to: Date): Promise<TaskOccurrence[]> {
-    const tasks = await this.prisma.task.findMany({
-      where: {
-        OR: [
-          { rrule: null, startAt: { lt: to }, endAt: { gt: from } },
-          { rrule: { not: null } },
-        ],
-      },
-      include: {
-        customer: true,
-        service: true,
-        assignedTeam: true,
-        createdBy: { select: { id: true, username: true } },
-      },
-    });
-    const out: TaskOccurrence[] = [];
-    for (const t of tasks) {
-      out.push(...this.expandRecurring(t, from, to));
+    // Validate date inputs
+    if (!(from instanceof Date) || isNaN(from.getTime())) {
+      throw new BadRequestException('Invalid "from" date');
     }
-    return out.sort(
-      (a, b) =>
-        new Date(a.occurrenceStart).getTime() -
-        new Date(b.occurrenceStart).getTime(),
-    );
+    if (!(to instanceof Date) || isNaN(to.getTime())) {
+      throw new BadRequestException('Invalid "to" date');
+    }
+    if (from >= to) {
+      throw new BadRequestException('"from" date must be before "to" date');
+    }
+
+    if (this.isDev) {
+      this.logger.debug(`Querying tasks from ${from.toISOString()} to ${to.toISOString()}`);
+    }
+    
+    try {
+      const tasks = await this.prisma.task.findMany({
+        where: {
+          OR: [
+            { rrule: null, startAt: { lt: to }, endAt: { gt: from } },
+            { rrule: { not: null } },
+          ],
+        },
+        include: {
+          customer: true,
+          service: true,
+          assignedTeam: true,
+          createdBy: { select: { id: true, username: true } },
+        },
+      });
+      
+      if (this.isDev) {
+        this.logger.debug(`Found ${tasks.length} task(s) in database`);
+      }
+      
+      const out: TaskOccurrence[] = [];
+      for (const t of tasks) {
+        // Skip tasks with missing createdBy relation (data integrity issue)
+        if (!t.createdBy) {
+          if (this.isDev) {
+            this.logger.warn(`Task ${t.id} has missing createdBy relation (createdById: ${t.createdById})`);
+          }
+          continue;
+        }
+        
+        try {
+          out.push(...this.expandRecurring(t, from, to));
+        } catch (error) {
+          if (this.isDev) {
+            this.logger.error(`Error expanding recurring task ${t.id}:`, error);
+          }
+          // Skip this task if expansion fails (e.g., invalid rrule)
+          continue;
+        }
+      }
+      
+      return out.sort(
+        (a, b) =>
+          new Date(a.occurrenceStart).getTime() -
+          new Date(b.occurrenceStart).getTime(),
+      );
+    } catch (error) {
+      if (this.isDev) {
+        this.logger.error('Prisma query error in getInRange:', error);
+        if (error instanceof Error) {
+          this.logger.error('Stack:', error.stack);
+        }
+      }
+      throw error;
+    }
   }
 
   async create(
@@ -224,6 +372,10 @@ export class TasksService {
 
     // Handle customer data
     let customerId: string | null = this.normalizeString(dto.customerId);
+    // CRITICAL: Validate customerName is not empty (required field)
+    if (!dto.customerName || typeof dto.customerName !== 'string' || dto.customerName.trim() === '') {
+      throw new BadRequestException('customerName is required and cannot be empty');
+    }
     let customerName = dto.customerName.trim();
     let address = this.normalizeString(dto.address);
     let phone = this.normalizeString(dto.phone);

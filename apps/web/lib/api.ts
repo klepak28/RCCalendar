@@ -15,12 +15,24 @@ export async function api<T>(
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string>),
   };
-  if (token) (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${API}${path}`, { ...init, headers, credentials: 'include' });
+  if (token) {
+    (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+  } else {
+    console.warn(`[API] No token found for request to ${path}`);
+  }
+  
+  const url = `${API}${path}`;
+  console.log(`[API] ${opts.method || 'GET'} ${url}`, token ? 'with auth' : 'NO AUTH');
+  
+  const res = await fetch(url, { ...init, headers, credentials: 'include' });
+  
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
-    throw new Error((j as { message?: string }).message ?? res.statusText);
+    const errorMessage = (j as { message?: string }).message ?? res.statusText;
+    console.error(`[API ERROR] ${res.status} ${res.statusText} on ${path}:`, j);
+    throw new Error(errorMessage);
   }
+  
   return res.json();
 }
 

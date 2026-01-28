@@ -81,11 +81,18 @@ export class PrismaExceptionFilter implements ExceptionFilter {
       console.error('Stack:', exception.stack);
     }
 
-    // Generic 500 error
+    // Generic 500 error - ensure we always return a proper JSON response
+    const errorMessage = exception instanceof Error 
+      ? (isDev ? exception.message : 'Internal server error')
+      : 'Internal server error';
+    
     return response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
       statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-      message: isDev && exception instanceof Error ? exception.message : 'Internal server error',
-      ...(isDev && exception instanceof Error && { stack: exception.stack }),
+      message: errorMessage,
+      ...(isDev && exception instanceof Error && { 
+        stack: exception.stack,
+        error: exception.name,
+      }),
     });
   }
 }

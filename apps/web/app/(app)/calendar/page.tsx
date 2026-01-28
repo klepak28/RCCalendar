@@ -450,11 +450,16 @@ function TaskModal({
       if (taskId) {
         await tasks.update(taskId, payload);
       } else {
-        await tasks.create(payload);
+        console.log('[CREATE TASK] Sending payload:', payload);
+        const result = await tasks.create(payload);
+        console.log('[CREATE TASK] Response:', result);
       }
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      console.error('[CREATE TASK ERROR]', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to save';
+      setError(errorMessage);
+      // Don't call onSaved() on error
     } finally {
       setLoading(false);
     }

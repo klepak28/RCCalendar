@@ -25,7 +25,8 @@
     "db:migrate:deploy": "pnpm --filter api run prisma:migrate:deploy",
     "db:seed": "pnpm --filter api run prisma:seed",
     "db:studio": "pnpm --filter api run prisma:studio",
-    "smoke:api": "pnpm --filter api run smoke"
+    "smoke:api": "pnpm --filter api run smoke",
+    "cleanup:rrule-exdate": "pnpm --filter api run cleanup:rrule-exdate"
   },
   "engines": {
     "node": ">=20"
