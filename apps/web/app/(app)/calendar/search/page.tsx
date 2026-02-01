@@ -1,13 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { format, parseISO, subDays, addYears, subYears } from 'date-fns';
 import { calendarSearch, type TaskOccurrence } from '@/lib/api';
 
 const OPEN_FOR_OCCURRENCE_KEY = 'calendar:openForOccurrence';
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 100;
 const REQUEST_DEBOUNCE_MS = 500;
 
 type TimeRangeKey = '30' | '90' | '365' | 'all';
@@ -86,6 +86,8 @@ export default function CalendarSearchPage() {
   const lastRequestKeyRef = useRef<string>('');
   const lastRequestTimeRef = useRef<number>(0);
   const abortRef = useRef<AbortController | null>(null);
+  const scrollDoneRef = useRef(false);
+  const targetRowRef = useRef<HTMLTableRowElement | null>(null);
 
   const fetchPage = useCallback(
     (cursor: string | null, append: boolean) => {
@@ -97,6 +99,7 @@ export default function CalendarSearchPage() {
       }
       const requestKey = `${q}|${fromIso}|${toIso}|${cursor ?? ''}`;
       if (!append) {
+        scrollDoneRef.current = false;
         const now = Date.now();
         if (
           lastRequestKeyRef.current === requestKey &&
@@ -150,6 +153,33 @@ export default function CalendarSearchPage() {
     }
     fetchPage(null, false);
   }, [q, fromIso, toIso, fetchPage]);
+
+  const todayStartLocal = useMemo(() => {
+    const d = new Date(nowRef.current!);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }, []);
+
+  // First index where occurrenceStart >= today 00:00 local. List is ASC (old -> new).
+  // Dev scenario: today=12th, visits on 11th and 17th -> firstFutureIndex=1, divider between them, scroll to row 1 (17th).
+  const firstFutureIndex = useMemo(() => {
+    if (items.length === 0) return -1;
+    return items.findIndex(
+      (o) => new Date(o.occurrenceStart).getTime() >= todayStartLocal,
+    );
+  }, [items, todayStartLocal]);
+
+  const scrollTargetIndex =
+    firstFutureIndex >= 0 ? firstFutureIndex : Math.max(0, items.length - 1);
+
+  useEffect(() => {
+    if (loading || items.length === 0 || scrollDoneRef.current) return;
+    const el = targetRowRef.current;
+    if (el) {
+      scrollDoneRef.current = true;
+      el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  }, [loading, items.length]);
 
   const handleLoadMore = () => {
     if (nextCursor && !loadingMore) fetchPage(nextCursor, true);
@@ -256,43 +286,70 @@ export default function CalendarSearchPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {items.map((o) => {
+                {items.map((o, i) => {
                   const start = parseISO(o.occurrenceStart);
+                  const isScrollTarget = i === scrollTargetIndex;
                   return (
-                    <tr
-                      key={`${o.taskId}-${o.occurrenceStart}`}
-                      onClick={() => handleRowClick(o)}
-                      className="cursor-pointer transition hover:bg-blue-50/80"
-                    >
-                      <td className="whitespace-nowrap px-4 py-3">
-                        <div className="text-lg font-semibold text-gray-800">
-                          {format(start, 'd')}
-                        </div>
-                        <div className="text-xs uppercase text-gray-500">
-                          {format(start, 'MMM yyyy, EEE')}
-                        </div>
-                      </td>
-                      <td className="px-2 py-3">
-                        <div
-                          className="h-3 w-3 rounded-full"
-                          style={{
-                            backgroundColor: o.assignedTeam?.colorHex ?? '#6b7280',
-                          }}
-                          aria-hidden
-                        />
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
-                        {formatSearchTimeRange(o)}
-                      </td>
-                      <td className="px-4 py-3 text-sm font-medium text-gray-800">
-                        {o.customerName ?? '—'}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-600">
-                        {o.address ?? '—'}
-                      </td>
-                    </tr>
+                    <React.Fragment key={`${o.taskId}-${o.occurrenceStart}`}>
+                      {i === firstFutureIndex && firstFutureIndex >= 0 ? (
+                        <tr className="bg-blue-50/80 border-y-2 border-blue-200">
+                          <td
+                            colSpan={5}
+                            className="px-4 py-2 text-sm font-semibold text-blue-800"
+                          >
+                            Today
+                          </td>
+                        </tr>
+                      ) : null}
+                      <tr
+                        ref={isScrollTarget ? targetRowRef : undefined}
+                        onClick={() => handleRowClick(o)}
+                        className="cursor-pointer transition hover:bg-blue-50/80"
+                      >
+                        <td className="whitespace-nowrap px-4 py-3">
+                          <div className="text-lg font-semibold text-gray-800">
+                            {format(start, 'd')}
+                          </div>
+                          <div className="text-xs uppercase text-gray-500">
+                            {format(start, 'MMM yyyy, EEE')}
+                          </div>
+                        </td>
+                        <td className="px-2 py-3">
+                          <div
+                            className="h-3 w-3 rounded-full"
+                            style={{
+                              backgroundColor:
+                                o.assignedTeam?.colorHex ?? '#6b7280',
+                            }}
+                            aria-hidden
+                          />
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
+                          {formatSearchTimeRange(o)}
+                        </td>
+                        <td className="px-4 py-3 text-sm font-medium text-gray-800">
+                          {o.customerName ?? '—'}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {o.address ?? '—'}
+                        </td>
+                      </tr>
+                    </React.Fragment>
                   );
                 })}
+                {firstFutureIndex === -1 && items.length > 0 ? (
+                  <tr
+                    key="today-divider-end"
+                    className="bg-blue-50/80 border-y-2 border-blue-200"
+                  >
+                    <td
+                      colSpan={5}
+                      className="px-4 py-2 text-sm font-semibold text-blue-800"
+                    >
+                      Today
+                    </td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </div>

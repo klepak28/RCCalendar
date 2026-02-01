@@ -690,9 +690,13 @@ export class TasksService {
       const sa = score(a);
       const sb = score(b);
       if (sb !== sa) return sb - sa;
+      const ta = new Date(a.occurrenceStart).getTime();
+      const tb = new Date(b.occurrenceStart).getTime();
+      if (ta !== tb) return ta - tb;
       return (
-        new Date(b.occurrenceStart).getTime() -
-        new Date(a.occurrenceStart).getTime()
+        `${a.taskId}|${a.occurrenceStart}`.localeCompare(
+          `${b.taskId}|${b.occurrenceStart}`,
+        )
       );
     });
 

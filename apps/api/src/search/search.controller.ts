@@ -43,7 +43,7 @@ export class SearchController {
       throw new BadRequestException('"from" date must be before "to" date');
     }
 
-    const limit = limitParam != null ? parseInt(limitParam, 10) : 50;
+    const limit = limitParam != null ? parseInt(limitParam, 10) : 100;
     if (isNaN(limit) || limit < 1 || limit > 200) {
       throw new BadRequestException('"limit" must be between 1 and 200');
     }
