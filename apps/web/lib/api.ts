@@ -22,8 +22,7 @@ export async function api<T>(
   }
   
   const url = `${API}${path}`;
-  console.log(`[API] ${opts.method || 'GET'} ${url}`, token ? 'with auth' : 'NO AUTH');
-  
+
   const res = await fetch(url, { ...init, headers, credentials: 'include' });
   
   if (!res.ok) {
@@ -170,6 +169,43 @@ export const customers = {
     }),
   delete: (id: string) =>
     api<void>(`/api/customers/${id}`, { method: 'DELETE' }),
+};
+
+export type CalendarSearchResponse = {
+  items: TaskOccurrence[];
+  nextCursor: string | null;
+};
+
+export const calendarSearch = (
+  query: string,
+  opts?: {
+    from?: string;
+    to?: string;
+    limit?: number;
+    cursor?: string;
+    signal?: AbortSignal;
+  }
+) => {
+  const now = new Date();
+  const from =
+    opts?.from ??
+    new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString();
+  const to =
+    opts?.to ??
+    new Date(now.getFullYear() + 1, now.getMonth(), now.getDate()).toISOString();
+  const limit = opts?.limit ?? 50;
+  const params = new URLSearchParams({
+    query: query.trim(),
+    from,
+    to,
+    limit: String(limit),
+  });
+  if (opts?.cursor != null && opts.cursor !== '') {
+    params.set('cursor', opts.cursor);
+  }
+  return api<CalendarSearchResponse>(`/api/search?${params.toString()}`, {
+    signal: opts?.signal,
+  });
 };
 
 export const tasks = {

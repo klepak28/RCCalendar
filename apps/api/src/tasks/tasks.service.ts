@@ -558,6 +558,152 @@ export class TasksService {
     }
   }
 
+  /**
+   * Search tasks by customer name, phone (digits), or address.
+   * Returns expanded occurrences in [from, to], sorted newest first, with pagination.
+   */
+  async search(
+    query: string,
+    from: Date,
+    to: Date,
+    limit: number = 50,
+    offset: number = 0,
+  ): Promise<{ items: TaskOccurrence[]; nextCursor: string | null }> {
+    const q = query?.trim() ?? '';
+    if (q.length === 0) {
+      return { items: [], nextCursor: null };
+    }
+
+    if (!(from instanceof Date) || isNaN(from.getTime())) {
+      throw new BadRequestException('Invalid "from" date');
+    }
+    if (!(to instanceof Date) || isNaN(to.getTime())) {
+      throw new BadRequestException('Invalid "to" date');
+    }
+    if (from >= to) {
+      throw new BadRequestException('"from" date must be before "to" date');
+    }
+
+    const qLower = q.toLowerCase();
+    const phoneDigits = q.replace(/\D/g, '');
+
+    const dateCondition = {
+      deletedAt: null,
+      OR: [
+        { rrule: { not: null } },
+        { startAt: { lte: to }, endAt: { gte: from } },
+      ],
+    };
+
+    const taskIds = new Set<string>();
+
+    const nameAddressMatch = {
+      OR: [
+        { customerName: { contains: q, mode: 'insensitive' as const } },
+        { address: { contains: q, mode: 'insensitive' as const } },
+      ],
+    };
+    const byNameAddress = await this.prisma.task.findMany({
+      where: { ...dateCondition, ...nameAddressMatch },
+      select: { id: true },
+    });
+    byNameAddress.forEach((t) => taskIds.add(t.id));
+
+    if (phoneDigits.length > 0) {
+      const allInRange = await this.prisma.task.findMany({
+        where: dateCondition,
+        select: { id: true, phone: true },
+      });
+      for (const t of allInRange) {
+        const tDigits = (t.phone ?? '').replace(/\D/g, '');
+        if (tDigits.includes(phoneDigits) || tDigits === phoneDigits) {
+          taskIds.add(t.id);
+        }
+      }
+    }
+
+    if (taskIds.size === 0) {
+      return { items: [], nextCursor: null };
+    }
+
+    const tasks = await this.prisma.task.findMany({
+      where: { id: { in: Array.from(taskIds) } },
+      include: {
+        customer: true,
+        service: true,
+        assignedTeam: true,
+        createdBy: { select: { id: true, username: true } },
+        overrides: {
+          include: {
+            customer: true,
+            service: true,
+            assignedTeam: true,
+          },
+        },
+      },
+    });
+
+    const recurringIds = tasks.filter((t) => t.rrule).map((t) => t.id);
+    if (recurringIds.length > 0) {
+      const overrides = await this.prisma.taskOverride.findMany({
+        where: { seriesId: { in: recurringIds } },
+        include: { customer: true, service: true, assignedTeam: true },
+      });
+      const byTask = new Map<string, typeof overrides>();
+      for (const o of overrides) {
+        const list = byTask.get(o.seriesId) ?? [];
+        list.push(o);
+        byTask.set(o.seriesId, list);
+      }
+      for (const t of tasks) {
+        if (t.rrule) (t as any).overrides = byTask.get(t.id) ?? [];
+      }
+    }
+
+    const out: TaskOccurrence[] = [];
+    for (const t of tasks) {
+      if (!t.createdBy) continue;
+      try {
+        const occurrences = this.expandRecurring(t, from, to);
+        out.push(...occurrences);
+      } catch (error) {
+        this.logger.warn(`Search: skip task ${t.id} expand error`);
+        continue;
+      }
+    }
+
+    const score = (occ: TaskOccurrence): number => {
+      const name = (occ.customerName ?? '').toLowerCase();
+      const addr = (occ.address ?? '').toLowerCase();
+      const ph = (occ.phone ?? '').replace(/\D/g, '');
+      let s = 0;
+      if (phoneDigits.length > 0 && ph === phoneDigits) s += 100;
+      else if (phoneDigits.length > 0 && ph.includes(phoneDigits)) s += 50;
+      if (name.startsWith(qLower)) s += 30;
+      else if (name.includes(qLower)) s += 10;
+      if (addr.startsWith(qLower)) s += 20;
+      else if (addr.includes(qLower)) s += 5;
+      return s;
+    };
+
+    const sorted = out.sort((a, b) => {
+      const sa = score(a);
+      const sb = score(b);
+      if (sb !== sa) return sb - sa;
+      return (
+        new Date(b.occurrenceStart).getTime() -
+        new Date(a.occurrenceStart).getTime()
+      );
+    });
+
+    const start = Math.max(0, offset);
+    const page = sorted.slice(start, start + limit);
+    const nextCursor =
+      start + limit < sorted.length ? String(start + limit) : null;
+
+    return { items: page, nextCursor };
+  }
+
   async create(
     userId: string,
     dto: CreateTaskDto,

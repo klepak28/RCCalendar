@@ -8,6 +8,7 @@ import { ServicesModule } from './services/services.module';
 import { TeamsModule } from './teams/teams.module';
 import { TasksModule } from './tasks/tasks.module';
 import { CustomersModule } from './customers/customers.module';
+import { SearchModule } from './search/search.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { CustomersModule } from './customers/customers.module';
     TeamsModule,
     TasksModule,
     CustomersModule,
+    SearchModule,
   ],
 })
 export class AppModule {}

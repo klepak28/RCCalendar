@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   format,
   startOfMonth,
@@ -15,43 +16,496 @@ import {
   addDays,
   parseISO,
 } from 'date-fns';
-import { tasks, type TaskOccurrence } from '@/lib/api';
+import { tasks, calendarSearch, type TaskOccurrence } from '@/lib/api';
+
+const OPEN_FOR_OCCURRENCE_KEY = 'calendar:openForOccurrence';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MAX_PILLS = 3;
+const MAX_EVENT_LINES = 4;
+const CALENDAR_PREFS_KEY = 'calendar:eventDisplayPrefs:v1';
+
+export type EventDisplayFieldKey = 'customerName' | 'time' | 'price' | 'serviceType';
+
+export type EventDisplayFieldPref = {
+  key: EventDisplayFieldKey;
+  label: string;
+  enabled: boolean;
+  locked?: boolean;
+};
+
+const DEFAULT_EVENT_DISPLAY_PREFS: EventDisplayFieldPref[] = [
+  { key: 'customerName', label: 'Customer Name', enabled: true, locked: true },
+  { key: 'time', label: 'Time', enabled: true, locked: false },
+  { key: 'price', label: 'Price', enabled: false, locked: false },
+  { key: 'serviceType', label: 'Service Type', enabled: false, locked: false },
+];
+
+function loadEventDisplayPrefs(): EventDisplayFieldPref[] {
+  if (typeof window === 'undefined') return [...DEFAULT_EVENT_DISPLAY_PREFS];
+  try {
+    const raw = localStorage.getItem(CALENDAR_PREFS_KEY);
+    if (!raw) return [...DEFAULT_EVENT_DISPLAY_PREFS];
+    const parsed = JSON.parse(raw) as EventDisplayFieldPref[];
+    if (!Array.isArray(parsed) || parsed.length === 0) return [...DEFAULT_EVENT_DISPLAY_PREFS];
+    const defaultByKey = new Map(DEFAULT_EVENT_DISPLAY_PREFS.map((p) => [p.key, p]));
+    const result: EventDisplayFieldPref[] = [];
+    const seen = new Set<EventDisplayFieldKey>();
+    for (const p of parsed) {
+      if (p && typeof p.key === 'string' && defaultByKey.has(p.key as EventDisplayFieldKey) && !seen.has(p.key as EventDisplayFieldKey)) {
+        seen.add(p.key as EventDisplayFieldKey);
+        const def = defaultByKey.get(p.key as EventDisplayFieldKey)!;
+        result.push({ ...def, enabled: def.locked ? true : !!p.enabled });
+      }
+    }
+    for (const def of DEFAULT_EVENT_DISPLAY_PREFS) {
+      if (!seen.has(def.key)) result.push({ ...def });
+    }
+    return result.length ? result : [...DEFAULT_EVENT_DISPLAY_PREFS];
+  } catch {
+    return [...DEFAULT_EVENT_DISPLAY_PREFS];
+  }
+}
+
+function saveEventDisplayPrefs(prefs: EventDisplayFieldPref[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(CALENDAR_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore
+  }
+}
+
+function getEventDisplayLines(
+  o: TaskOccurrence,
+  prefs: EventDisplayFieldPref[],
+): string[] {
+  const start = parseISO(o.occurrenceStart);
+  const end = parseISO(o.occurrenceEnd);
+  const lines: string[] = [];
+  for (const p of prefs) {
+    if (!p.enabled) continue;
+    let text: string | null = null;
+    switch (p.key) {
+      case 'customerName':
+        text = o.customerName || null;
+        break;
+      case 'time': {
+        const startStr = format(start, 'h:mm a');
+        if (end.getTime() > start.getTime()) {
+          text = `${startStr} – ${format(end, 'h:mm a')}`;
+        } else {
+          text = startStr;
+        }
+        break;
+      }
+      case 'price':
+        text = o.servicePriceCents != null ? `$${(o.servicePriceCents / 100).toFixed(2)}` : null;
+        break;
+      case 'serviceType':
+        text = o.service?.name ?? null;
+        break;
+      default:
+        break;
+    }
+    if (text != null && text !== '') {
+      lines.push(text);
+    }
+  }
+  return lines.slice(0, MAX_EVENT_LINES);
+}
+
+function CalendarSettingsModal({
+  prefs,
+  onSave,
+  onReset,
+  onClose,
+}: {
+  prefs: EventDisplayFieldPref[];
+  onSave: (prefs: EventDisplayFieldPref[]) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  const [localPrefs, setLocalPrefs] = useState<EventDisplayFieldPref[]>(() => [...prefs]);
+
+  useEffect(() => {
+    setLocalPrefs([...prefs]);
+  }, [prefs]);
+
+  const move = (index: number, dir: -1 | 1) => {
+    const next = index + dir;
+    if (next < 0 || next >= localPrefs.length) return;
+    const copy = [...localPrefs];
+    const a = copy[index];
+    copy[index] = copy[next];
+    copy[next] = a;
+    setLocalPrefs(copy);
+  };
+
+  const setEnabled = (index: number, enabled: boolean) => {
+    const copy = [...localPrefs];
+    if (copy[index].locked) return;
+    copy[index] = { ...copy[index], enabled };
+    setLocalPrefs(copy);
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} aria-hidden />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div
+          className="w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="border-b border-gray-200 px-6 py-4">
+            <h3 className="text-lg font-semibold text-gray-800">Calendar Settings</h3>
+          </div>
+          <div className="px-6 py-4">
+            <p className="mb-3 text-sm text-gray-600">
+              Choose which fields to show in each event block and their order.
+            </p>
+            <ul className="space-y-2">
+              {localPrefs.map((p, i) => (
+                <li
+                  key={p.key}
+                  className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2"
+                >
+                  <input
+                    type="checkbox"
+                    id={`pref-${p.key}`}
+                    checked={p.enabled}
+                    disabled={!!p.locked}
+                    onChange={(e) => setEnabled(i, e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <label htmlFor={`pref-${p.key}`} className="flex-1 text-sm font-medium text-gray-800">
+                    {p.label}
+                    {p.locked && <span className="ml-1 text-xs text-gray-500">(always on)</span>}
+                  </label>
+                  <div className="flex gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => move(i, -1)}
+                      disabled={i === 0}
+                      className="rounded p-1.5 text-gray-600 hover:bg-gray-200 disabled:opacity-40"
+                      aria-label="Move up"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => move(i, 1)}
+                      disabled={i === localPrefs.length - 1}
+                      className="rounded p-1.5 text-gray-600 hover:bg-gray-200 disabled:opacity-40"
+                      aria-label="Move down"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={onReset}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Reset to default
+              </button>
+              <button
+                type="button"
+                onClick={() => onSave(localPrefs)}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function useCalendarSearch() {
+  const [results, setResults] = useState<TaskOccurrence[]>([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const runQuery = useCallback((query: string) => {
+    const q = query.trim();
+    if (!q) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null;
+      if (abortRef.current) abortRef.current.abort();
+      abortRef.current = new AbortController();
+      setLoading(true);
+      calendarSearch(q, { limit: 5, signal: abortRef.current.signal })
+        .then((data) => {
+          setResults(data.items);
+        })
+        .catch((err) => {
+          if (err?.name === 'AbortError') return;
+          setResults([]);
+        })
+        .finally(() => {
+          setLoading(false);
+          abortRef.current = null;
+        });
+    }, 250);
+  }, []);
+
+  return { results, loading, runQuery };
+}
+
+function formatSearchTimeRange(o: TaskOccurrence): string {
+  const start = parseISO(o.occurrenceStart);
+  const end = parseISO(o.occurrenceEnd);
+  const startStr = format(start, 'h:mm a');
+  if (end.getTime() > start.getTime()) {
+    return `${startStr} – ${format(end, 'h:mm a')}`;
+  }
+  return startStr;
+}
+
+function CalendarSearchInput({
+  value,
+  onChange,
+  onClear,
+  onFocus,
+  onGoToSearch,
+  placeholder,
+  showPanel,
+  onClosePanel,
+  results,
+  loading,
+  selectedIndex,
+  onSelectIndex,
+  onKeyDown,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onClear: () => void;
+  onFocus: () => void;
+  onGoToSearch: (query: string) => void;
+  placeholder: string;
+  showPanel: boolean;
+  onClosePanel: () => void;
+  results: TaskOccurrence[];
+  loading: boolean;
+  selectedIndex: number;
+  onSelectIndex: (i: number) => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showPanel) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onClosePanel();
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showPanel, onClosePanel]);
+
+  const suggestions = results.slice(0, 5);
+  const showSuggestions = showPanel && value.trim().length > 0;
+
+  return (
+    <div ref={containerRef} className="relative w-72 max-w-full">
+      <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-blue-500/20">
+        <svg className="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={onFocus}
+          onKeyDown={onKeyDown}
+          placeholder={placeholder}
+          className="min-w-0 flex-1 bg-transparent text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none"
+          aria-label="Search calendar"
+        />
+        {value.length > 0 && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            aria-label="Clear search"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {showSuggestions && (
+        <div className="absolute left-0 top-full z-50 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-xl">
+          {loading ? (
+            <div className="px-4 py-3 text-center text-sm text-gray-500">Searching…</div>
+          ) : suggestions.length === 0 ? (
+            <div className="px-4 py-3 text-center text-sm text-gray-500">No suggestions</div>
+          ) : (
+            <ul className="py-1" role="listbox">
+              {suggestions.map((o, i) => (
+                <li
+                  key={`${o.taskId}-${o.occurrenceStart}`}
+                  role="option"
+                  aria-selected={i === selectedIndex}
+                  className={`flex cursor-pointer items-center gap-2 px-4 py-2 text-left text-sm transition ${
+                    i === selectedIndex ? 'bg-blue-50' : 'hover:bg-gray-50'
+                  }`}
+                  onClick={() => onGoToSearch(value.trim())}
+                  onMouseEnter={() => onSelectIndex(i)}
+                >
+                  <div
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: o.assignedTeam?.colorHex ?? '#6b7280' }}
+                  />
+                  <span className="truncate text-gray-700">
+                    {o.customerName ?? '—'}
+                    {o.address ? ` — ${o.address}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="border-t border-gray-100 px-4 py-2 text-center text-xs text-gray-500">
+            Press Enter to see all results
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function CalendarPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [viewDate, setViewDate] = useState(() => new Date());
   const [occurrences, setOccurrences] = useState<TaskOccurrence[]>([]);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [eventDisplayPrefs, setEventDisplayPrefs] = useState<EventDisplayFieldPref[]>(() =>
+    typeof window !== 'undefined' ? loadEventDisplayPrefs() : [...DEFAULT_EVENT_DISPLAY_PREFS],
+  );
+  const [calendarSettingsOpen, setCalendarSettingsOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchSelectedIndex, setSearchSelectedIndex] = useState(0);
+  const [openForOccurrence, setOpenForOccurrence] = useState<TaskOccurrence | null>(null);
 
-  const rangeStart = startOfMonth(viewDate);
-  const rangeEnd = endOfMonth(viewDate);
-  const rangeStartUtc = rangeStart;
-  const rangeEndUtc = rangeEnd;
+  const openTaskIdParam = searchParams.get('openTaskId') ?? '';
+  const occurrenceStartParam = searchParams.get('occurrenceStart') ?? '';
+  const dateParam = searchParams.get('date') ?? '';
+
+  const handledOpenRef = useRef<string | null>(null);
+  const routerRef = useRef(router);
+  routerRef.current = router;
+
+  useEffect(() => {
+    if (!openTaskIdParam || !occurrenceStartParam) return;
+
+    const key = `${openTaskIdParam}|${occurrenceStartParam}`;
+    if (handledOpenRef.current === key) {
+      return;
+    }
+    handledOpenRef.current = key;
+
+    try {
+      const stored =
+        typeof window !== 'undefined'
+          ? sessionStorage.getItem(OPEN_FOR_OCCURRENCE_KEY)
+          : null;
+      const occ: TaskOccurrence | null = stored
+        ? (JSON.parse(stored) as TaskOccurrence)
+        : null;
+      const newPath = dateParam
+        ? `/calendar?date=${encodeURIComponent(dateParam)}`
+        : '/calendar';
+      if (
+        occ &&
+        occ.taskId === openTaskIdParam &&
+        occ.occurrenceStart === occurrenceStartParam
+      ) {
+        const d = new Date(
+          (dateParam || occ.occurrenceStart.slice(0, 10)) + 'T12:00:00',
+        );
+        if (!isNaN(d.getTime())) {
+          setViewDate(d);
+          setSelectedDate(d);
+          setDrawerOpen(true);
+          setOpenForOccurrence(occ);
+        }
+        sessionStorage.removeItem(OPEN_FOR_OCCURRENCE_KEY);
+        queueMicrotask(() => {
+          routerRef.current.replace(newPath, { scroll: false });
+        });
+      } else {
+        queueMicrotask(() => {
+          routerRef.current.replace(newPath, { scroll: false });
+        });
+      }
+    } catch {
+      queueMicrotask(() => {
+        routerRef.current.replace(
+          dateParam ? `/calendar?date=${encodeURIComponent(dateParam)}` : '/calendar',
+          { scroll: false },
+        );
+      });
+    }
+  }, [openTaskIdParam, occurrenceStartParam, dateParam]);
+
+  const rangeFromIso = useMemo(
+    () => startOfMonth(viewDate).toISOString(),
+    [viewDate.getFullYear(), viewDate.getMonth()],
+  );
+  const rangeToIso = useMemo(
+    () => endOfMonth(viewDate).toISOString(),
+    [viewDate.getFullYear(), viewDate.getMonth()],
+  );
 
   const loadTasks = useCallback(() => {
     setLoading(true);
-    console.log(`[LOAD TASKS] Fetching tasks from ${rangeStartUtc.toISOString()} to ${rangeEndUtc.toISOString()}`);
     tasks
-      .list(rangeStartUtc.toISOString(), rangeEndUtc.toISOString())
-      .then((occ) => {
-        console.log(`[LOAD TASKS] Received ${occ.length} occurrences`);
-        setOccurrences(occ);
-      })
+      .list(rangeFromIso, rangeToIso)
+      .then((occ) => setOccurrences(occ))
       .catch((err) => {
         console.error('[LOAD TASKS ERROR]', err);
         setOccurrences([]);
       })
       .finally(() => setLoading(false));
-  }, [rangeStartUtc.toISOString(), rangeEndUtc.toISOString()]);
+  }, [rangeFromIso, rangeToIso]);
 
   useEffect(() => {
     loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    setEventDisplayPrefs(loadEventDisplayPrefs());
+  }, []);
 
   const gridStart = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 0 });
   const gridEnd = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 0 });
@@ -95,10 +549,74 @@ export default function CalendarPage() {
     }
   };
 
+  const {
+    results: searchResults,
+    loading: searchLoading,
+    runQuery: searchRunQuery,
+  } = useCalendarSearch();
+
+  useEffect(() => {
+    setSearchSelectedIndex((i) =>
+      searchResults.length === 0 ? 0 : Math.min(i, searchResults.length - 1),
+    );
+  }, [searchResults.length]);
+
+  const handleGoToSearch = (query: string) => {
+    const q = query.trim();
+    if (q) {
+      setSearchOpen(false);
+      router.push(`/calendar/search?q=${encodeURIComponent(q)}`);
+    }
+  };
+
   return (
     <div className="min-h-screen p-6 sm:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
+          <CalendarSearchInput
+            value={searchQuery}
+            onChange={(v) => {
+              setSearchQuery(v);
+              setSearchOpen(true);
+              setSearchSelectedIndex(0);
+              searchRunQuery(v);
+            }}
+            onClear={() => {
+              setSearchQuery('');
+              setSearchOpen(false);
+            }}
+            onFocus={() => searchQuery.trim() && setSearchOpen(true)}
+            onGoToSearch={handleGoToSearch}
+            placeholder="Search (name, phone, address)"
+            showPanel={searchOpen}
+            onClosePanel={() => setSearchOpen(false)}
+            results={searchResults}
+            loading={searchLoading}
+            selectedIndex={searchSelectedIndex}
+            onSelectIndex={setSearchSelectedIndex}
+            onKeyDown={(e) => {
+              if (!searchOpen) return;
+              if (e.key === 'Escape') {
+                setSearchOpen(false);
+                return;
+              }
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setSearchSelectedIndex((i) => Math.min(i + 1, Math.max(0, searchResults.length - 1)));
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setSearchSelectedIndex((i) => Math.max(0, i - 1));
+                return;
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleGoToSearch(searchQuery);
+                return;
+              }
+            }}
+          />
           <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white shadow-sm">
             <button
               onClick={() => setViewDate((d) => subMonths(d, 1))}
@@ -151,13 +669,29 @@ export default function CalendarPage() {
             )}
           </div>
         </div>
-        <Link
-          href="/settings"
+        <button
+          type="button"
+          onClick={() => setCalendarSettingsOpen(true)}
           className="rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50"
         >
-          Settings
-        </Link>
+          Calendar Settings
+        </button>
       </div>
+      {calendarSettingsOpen && (
+        <CalendarSettingsModal
+          prefs={eventDisplayPrefs}
+          onSave={(prefs) => {
+            setEventDisplayPrefs(prefs);
+            saveEventDisplayPrefs(prefs);
+            setCalendarSettingsOpen(false);
+          }}
+          onReset={() => {
+            setEventDisplayPrefs([...DEFAULT_EVENT_DISPLAY_PREFS]);
+            saveEventDisplayPrefs(DEFAULT_EVENT_DISPLAY_PREFS);
+          }}
+          onClose={() => setCalendarSettingsOpen(false)}
+        />
+      )}
 
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
         <div className="grid grid-cols-7 border-b border-gray-200 bg-gray-50/80">
@@ -198,18 +732,30 @@ export default function CalendarPage() {
                       {format(day, 'd')}
                     </div>
                     <div className="space-y-1">
-                      {visible.map((o) => (
-                        <div
-                          key={`${o.taskId}-${o.occurrenceStart}`}
-                          className="task-pill truncate"
-                          style={{
-                            backgroundColor: o.assignedTeam?.colorHex ?? '#6b7280',
-                          }}
-                          title={o.customerName}
-                        >
-                          {o.customerName}
-                        </div>
-                      ))}
+                      {visible.map((o) => {
+                        const lines = getEventDisplayLines(o, eventDisplayPrefs);
+                        const title = lines.join('\n');
+                        return (
+                          <div
+                            key={`${o.taskId}-${o.occurrenceStart}`}
+                            className="task-pill overflow-hidden"
+                            style={{
+                              backgroundColor: o.assignedTeam?.colorHex ?? '#6b7280',
+                            }}
+                            title={title}
+                          >
+                            {lines.length > 0 && (
+                              <div className="space-y-0.5">
+                                {lines.map((line, i) => (
+                                  <div key={i} className="truncate text-xs leading-tight">
+                                    {line}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                       {more > 0 && (
                         <div className="truncate px-1 text-xs text-gray-500">
                           +{more} more
@@ -230,6 +776,8 @@ export default function CalendarPage() {
           occurrences={selectedOccurrences}
           onClose={() => setDrawerOpen(false)}
           onTaskChange={loadTasks}
+          openForOccurrence={openForOccurrence}
+          onClearOpenForOccurrence={() => setOpenForOccurrence(null)}
         />
       )}
     </div>
@@ -241,11 +789,15 @@ function DayDrawer({
   occurrences,
   onClose,
   onTaskChange,
+  openForOccurrence,
+  onClearOpenForOccurrence,
 }: {
   date: Date;
   occurrences: TaskOccurrence[];
   onClose: () => void;
   onTaskChange: () => void;
+  openForOccurrence: TaskOccurrence | null;
+  onClearOpenForOccurrence: () => void;
 }) {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -259,6 +811,16 @@ function DayDrawer({
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
+
+  const onClearOpenRef = useRef(onClearOpenForOccurrence);
+  onClearOpenRef.current = onClearOpenForOccurrence;
+  useEffect(() => {
+    if (!openForOccurrence) return;
+    setEditingOccurrence(openForOccurrence);
+    setEditingId(openForOccurrence.taskId);
+    setShowModal(true);
+    onClearOpenRef.current();
+  }, [openForOccurrence]);
 
   const handleDeleteClick = (occurrence: TaskOccurrence) => {
     setDeletingOccurrence(occurrence);
