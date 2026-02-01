@@ -26,6 +26,7 @@
     "db:seed": "pnpm --filter api run prisma:seed",
     "db:studio": "pnpm --filter api run prisma:studio",
     "smoke:api": "pnpm --filter api run smoke",
+    "clean:web": "pnpm --filter web run clean",
     "cleanup:rrule-exdate": "pnpm --filter api run cleanup:rrule-exdate",
     "migrate:rrule-exdate": "pnpm --filter api run migrate:rrule-exdate"
   },

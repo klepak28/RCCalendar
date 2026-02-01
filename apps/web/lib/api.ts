@@ -201,7 +201,7 @@ export const tasks = {
       body: JSON.stringify(d),
     });
   },
-  delete: (id: string, scope?: 'single' | 'following' | 'all', occurrenceStart?: string) => {
+  delete: (id: string, scope?: 'single' | 'following', occurrenceStart?: string) => {
     const params = new URLSearchParams();
     if (scope) params.set('scope', scope);
     if (occurrenceStart) params.set('occurrenceStart', occurrenceStart);
