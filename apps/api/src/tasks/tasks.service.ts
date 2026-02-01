@@ -1,4 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { appendFileSync } from 'fs';
+import { join } from 'path';
 import { rrulestr, RRuleSet, RRule } from 'rrule';
 import { addMilliseconds, differenceInMilliseconds } from 'date-fns';
 import { PrismaService } from '../prisma/prisma.service';
@@ -68,61 +70,102 @@ export class TasksService {
   }
 
   /**
-   * Parse RRULE string and extract RRULE and EXDATE parts
-   * Returns { rrule: string, exdates: Date[] }
+   * Sanitize RRULE string by extracting EXDATE values
+   * This handles backward compatibility for tasks that have EXDATE embedded in rrule
+   * Returns { cleanRrule: string, extractedExdates: Date[] }
+   * 
+   * Important: DATE-only exdates (YYYYMMDD) are converted to DateTime matching dtstart time
    */
-  private parseRruleWithExdate(rruleStr: string): { rrule: string; exdates: Date[] } {
+  private sanitizeRrule(rruleStr: string, dtstart: Date): { cleanRrule: string; extractedExdates: Date[] } {
+    if (!rruleStr || (!rruleStr.includes('EXDATE') && !rruleStr.includes('exdate'))) {
+      return { cleanRrule: rruleStr, extractedExdates: [] };
+    }
+
     const parts = rruleStr.split(';');
     const rruleParts: string[] = [];
-    const exdates: Date[] = [];
+    const extractedExdates: Date[] = [];
 
     for (const part of parts) {
-      if (part.startsWith('EXDATE=')) {
+      const partLower = part.toLowerCase();
+      if (partLower.startsWith('exdate=') || partLower.startsWith('exdate:')) {
         // Extract EXDATE values (can be comma-separated)
-        const exdateStr = part.substring(7); // Remove "EXDATE="
+        const exdateStr = part.substring(part.indexOf('=') + 1); // Remove "EXDATE=" or "EXDATE:"
         const exdateValues = exdateStr.split(',');
         
         for (const exdateValue of exdateValues) {
           try {
-            // EXDATE format: YYYYMMDD or YYYYMMDDTHHMMSSZ
-            let dateStr = exdateValue.trim();
+            const dateStr = exdateValue.trim();
+            let exdate: Date;
+            
             if (dateStr.length === 8) {
-              // YYYYMMDD format - convert to Date
+              // YYYYMMDD format (DATE-only) - convert to DateTime matching dtstart time
               const year = parseInt(dateStr.substring(0, 4), 10);
               const month = parseInt(dateStr.substring(4, 6), 10) - 1; // 0-indexed
               const day = parseInt(dateStr.substring(6, 8), 10);
-              const date = new Date(Date.UTC(year, month, day));
-              if (!isNaN(date.getTime())) {
-                exdates.push(date);
+              
+              // Use the same time-of-day as dtstart (in UTC)
+              exdate = new Date(Date.UTC(
+                year, month, day,
+                dtstart.getUTCHours(),
+                dtstart.getUTCMinutes(),
+                dtstart.getUTCSeconds(),
+                dtstart.getUTCMilliseconds()
+              ));
+              
+              if (!isNaN(exdate.getTime())) {
+                extractedExdates.push(exdate);
+                if (this.isDev) {
+                  this.logger.debug(`Extracted DATE-only exdate: ${dateStr} -> ${exdate.toISOString()} (using dtstart time)`);
+                }
               }
             } else if (dateStr.length >= 15) {
-              // YYYYMMDDTHHMMSSZ format
+              // YYYYMMDDTHHMMSSZ format (DateTime)
               const year = parseInt(dateStr.substring(0, 4), 10);
               const month = parseInt(dateStr.substring(4, 6), 10) - 1;
               const day = parseInt(dateStr.substring(6, 8), 10);
               const hour = dateStr.length > 9 ? parseInt(dateStr.substring(9, 11), 10) : 0;
               const minute = dateStr.length > 11 ? parseInt(dateStr.substring(11, 13), 10) : 0;
               const second = dateStr.length > 13 ? parseInt(dateStr.substring(13, 15), 10) : 0;
-              const date = new Date(Date.UTC(year, month, day, hour, minute, second));
-              if (!isNaN(date.getTime())) {
-                exdates.push(date);
+              
+              exdate = new Date(Date.UTC(year, month, day, hour, minute, second));
+              if (!isNaN(exdate.getTime())) {
+                extractedExdates.push(exdate);
+                if (this.isDev) {
+                  this.logger.debug(`Extracted DateTime exdate: ${dateStr} -> ${exdate.toISOString()}`);
+                }
+              }
+            } else {
+              // Try parsing as ISO string
+              exdate = new Date(dateStr);
+              if (!isNaN(exdate.getTime())) {
+                extractedExdates.push(exdate);
+                if (this.isDev) {
+                  this.logger.debug(`Extracted ISO exdate: ${dateStr} -> ${exdate.toISOString()}`);
+                }
               }
             }
           } catch (error) {
             // Skip invalid EXDATE values
             if (this.isDev) {
-              this.logger.warn(`Invalid EXDATE value: ${exdateValue}`);
+              this.logger.warn(`Invalid EXDATE value in rrule: ${exdateValue}, skipping`);
             }
           }
         }
       } else {
+        // Keep non-EXDATE parts
         rruleParts.push(part);
       }
     }
 
+    const cleanRrule = rruleParts.join(';');
+    
+    if (this.isDev && extractedExdates.length > 0) {
+      this.logger.debug(`Sanitized rrule: removed ${extractedExdates.length} EXDATE value(s), clean rrule: ${cleanRrule}`);
+    }
+
     return {
-      rrule: rruleParts.join(';'),
-      exdates,
+      cleanRrule,
+      extractedExdates,
     };
   }
 
@@ -146,6 +189,24 @@ export class TasksService {
       createdById: string;
       createdBy: { id: string; username: string };
       rrule: string | null;
+      exDates: Date[];
+      overrides?: Array<{
+        originalStartAt: Date;
+        customerName: string | null;
+        customerId: string | null;
+        address: string | null;
+        phone: string | null;
+        serviceId: string | null;
+        service: { id: string; name: string } | null;
+        servicePriceCents: number | null;
+        description: string | null;
+        notes: string | null;
+        startAt: Date | null;
+        endAt: Date | null;
+        allDay: boolean | null;
+        assignedTeamId: string | null;
+        assignedTeam: { id: string; name: string; colorHex: string } | null;
+      }>;
     },
     from: Date,
     to: Date,
@@ -182,10 +243,25 @@ export class TasksService {
       const durationMs = this.getDurationMs(task);
       const dtstart = task.startAt;
 
-      // Parse RRULE and extract EXDATE if present
-      const { rrule: cleanRrule, exdates } = this.parseRruleWithExdate(task.rrule);
-
-      // Build the iCal string for parsing
+      // Sanitize rrule to extract any embedded EXDATE (backward compatibility)
+      // Wrap in try-catch to handle any errors during sanitization
+      let cleanRrule: string;
+      let extractedExdates: Date[] = [];
+      try {
+        const sanitized = this.sanitizeRrule(task.rrule || '', dtstart);
+        cleanRrule = sanitized.cleanRrule;
+        extractedExdates = sanitized.extractedExdates;
+      } catch (sanitizeError) {
+        // If sanitization fails, log and use original rrule (might still fail, but we'll catch it)
+        this.logger.error(`Failed to sanitize RRULE for task ${task.id}: ${task.rrule}`);
+        if (sanitizeError instanceof Error) {
+          this.logger.error(`Sanitization error: ${sanitizeError.message}`);
+        }
+        cleanRrule = task.rrule || '';
+        extractedExdates = [];
+      }
+      
+      // Build the iCal string for parsing (rrule should be clean, no EXDATE)
       const dtstartStr = dtstart
         .toISOString()
         .replace(/[-:]/g, '')
@@ -194,62 +270,121 @@ export class TasksService {
       
       const fullRule = `DTSTART:${dtstartStr}\nRRULE:${cleanRrule}`;
 
-      // Use RRuleSet if we have EXDATE, otherwise use regular RRule
-      let rule: RRule | RRuleSet;
-      if (exdates.length > 0) {
-        // Parse the base RRULE (without EXDATE)
-        const baseRule = rrulestr(fullRule) as RRule;
-        // Create RRuleSet and add exclusions
-        const ruleSet = new RRuleSet();
-        ruleSet.rrule(baseRule);
-        for (const exdate of exdates) {
-          ruleSet.exdate(exdate);
+      // Parse the base RRULE (should be clean after sanitization)
+      // NOTE: We do NOT use RRuleSet.exdate() here - we filter using TaskOverride during expansion
+      let baseRule: RRule;
+      try {
+        baseRule = rrulestr(fullRule) as RRule;
+      } catch (parseError) {
+        // If parsing fails, log detailed error and re-throw to be caught by outer try-catch
+        this.logger.error(`Failed to parse RRULE for task ${task.id} (${task.customerName})`);
+        this.logger.error(`Original rrule: ${task.rrule}`);
+        this.logger.error(`Sanitized rrule: ${cleanRrule}`);
+        this.logger.error(`Full rule string: ${fullRule}`);
+        if (parseError instanceof Error) {
+          this.logger.error(`Parse error: ${parseError.message}`);
+          if (this.isDev && parseError.stack) {
+            this.logger.error(`Stack: ${parseError.stack}`);
+          }
         }
-        rule = ruleSet;
-        if (this.isDev) {
-          this.logger.debug(`Task ${task.id}: Using RRuleSet with ${exdates.length} EXDATE exclusion(s)`);
-        }
-      } else {
-        // No EXDATE, use regular parsing
-        rule = rrulestr(fullRule) as RRule;
+        throw parseError; // Will be caught by outer try-catch
       }
 
-      const occDates = rule.between(from, to, true);
-      return occDates.map((d) => {
-        const start = new Date(d);
-        const end = addMilliseconds(start, durationMs);
-        return {
-          taskId: task.id,
-          occurrenceStart: start.toISOString(),
-          occurrenceEnd: end.toISOString(),
-          customerName: task.customerName,
-          customerId: task.customerId,
-          address: task.address,
-          phone: task.phone,
-          serviceId: task.serviceId,
-          service: task.service,
-          servicePriceCents: task.servicePriceCents,
-          description: task.description,
-          notes: task.notes,
-          allDay: task.allDay,
-          assignedTeamId: task.assignedTeamId,
-          assignedTeam: task.assignedTeam,
-          createdById: task.createdById,
-          createdBy: task.createdBy,
-          rrule: task.rrule,
-        };
-      });
-    } catch (error) {
-      // CRITICAL: Don't let one malformed recurrence break the entire request
-      if (this.isDev) {
-        this.logger.error(`Error expanding recurring task ${task.id}:`, error);
-        this.logger.error(`RRULE string: ${task.rrule}`);
-        if (error instanceof Error) {
-          this.logger.error(`Error stack: ${error.stack}`);
+      // Generate all occurrences from RRULE (no EXDATE filtering here - we filter via TaskOverride)
+      const occDates = baseRule.between(from, to, true);
+      
+      // Log extracted exdates for backward compatibility (legacy data)
+      if (extractedExdates.length > 0) {
+        this.logger.debug(`Task ${task.id}: Found ${extractedExdates.length} legacy EXDATE(s) in RRULE (will be handled via TaskOverride)`);
+      }
+      
+      // Create maps of overrides by originalStartAt timestamp for quick lookup
+      // Use getTime() (number) for reliable comparison instead of ISO strings
+      // Extract element type safely even if overrides is optional
+      type Override = NonNullable<(typeof task)['overrides']>[number];
+      const overrideMap = new Map<number, Override>();
+      const deletedOverrideSet = new Set<number>(); // Use Set for deleted timestamps
+      
+      // Runtime safety: overrides is always included in Prisma queries, but handle undefined just in case
+      // Normalize dates to seconds precision for reliable matching
+      this.logger.debug(`[EXPAND] Processing ${task.overrides?.length || 0} override(s) for task ${task.id}`);
+      
+      for (const override of (task.overrides ?? [])) {
+        const normalizedDate = new Date(override.originalStartAt);
+        normalizedDate.setUTCMilliseconds(0); // Normalize to seconds precision
+        const timestamp = normalizedDate.getTime(); // Use timestamp (number) for matching
+        const ov = override as { deletedAt?: Date | null };
+        if (ov.deletedAt) {
+          deletedOverrideSet.add(timestamp);
+          this.logger.debug(`[EXPAND] Found deleted override: taskId ${task.id} originalStartAt ${normalizedDate.toISOString()} (timestamp: ${timestamp}) deletedAt ${ov.deletedAt.toISOString()}`);
+        } else {
+          overrideMap.set(timestamp, override);
         }
       }
+      
+      if (deletedOverrideSet.size > 0) {
+        this.logger.debug(`[EXPAND] Task ${task.id} has ${deletedOverrideSet.size} deleted override(s) to filter`);
+        this.logger.debug(`[EXPAND] Deleted timestamps: ${Array.from(deletedOverrideSet).join(', ')}`);
+      }
+      
+      // #region agent log
+      const occTimestamps = occDates.map(d => { const n = new Date(d); n.setUTCMilliseconds(0); return n.getTime(); });
+      try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'expandRecurring_before_filter',data:{taskId:task.id,overrideCount:task.overrides?.length ?? 0,deletedOverrideTimestamps:Array.from(deletedOverrideSet),occDatesCount:occDates.length,firstOccTimestamps:occTimestamps.slice(0,10),matchCheck:occTimestamps.filter(ts=>deletedOverrideSet.has(ts)).length},hypothesisId:'H2'})+'\n'); } catch(_){}
+      // #endregion
+      
+      // Filter out occurrences that have deletion exceptions (deletedAt is set)
+      // Compare using getTime() for exact timestamp matching
+      return occDates
+        .map((d) => {
+          const start = new Date(d);
+          const end = addMilliseconds(start, durationMs);
+          // Normalize to seconds precision for reliable matching with overrides
+          const normalizedStart = new Date(start);
+          normalizedStart.setUTCMilliseconds(0);
+          const occurrenceTimestamp = normalizedStart.getTime(); // Use timestamp for matching
+          
+          // Check deleted overrides first using timestamp comparison
+          if (deletedOverrideSet.has(occurrenceTimestamp)) {
+            this.logger.debug(`[EXPAND] Skipping occurrence due to deleted override: taskId ${task.id} occStart ${normalizedStart.toISOString()} (timestamp: ${occurrenceTimestamp})`);
+            return null;
+          }
+          
+          // Check regular overrides for field overrides
+          const override = overrideMap.get(occurrenceTimestamp);
+          
+          // If there's an override, use override values; otherwise use series defaults
+          return {
+            taskId: task.id,
+            occurrenceStart: (override?.startAt || start).toISOString(),
+            occurrenceEnd: (override?.endAt || end).toISOString(),
+            customerName: override?.customerName ?? task.customerName,
+            customerId: override?.customerId ?? task.customerId,
+            address: override?.address ?? task.address,
+            phone: override?.phone ?? task.phone,
+            serviceId: override?.serviceId ?? task.serviceId,
+            service: override?.service ?? task.service,
+            servicePriceCents: override?.servicePriceCents ?? task.servicePriceCents,
+            description: override?.description ?? task.description,
+            notes: override?.notes ?? task.notes,
+            allDay: override?.allDay ?? task.allDay,
+            assignedTeamId: override?.assignedTeamId ?? task.assignedTeamId,
+            assignedTeam: override?.assignedTeam ?? task.assignedTeam,
+            createdById: task.createdById,
+            createdBy: task.createdBy,
+            rrule: task.rrule,
+          };
+        })
+        .filter((occ): occ is TaskOccurrence => occ !== null); // Remove null entries
+    } catch (error) {
+      // CRITICAL: Don't let one malformed recurrence break the entire request
+      this.logger.error(`Error expanding recurring task ${task.id}:`, error);
+      this.logger.error(`RRULE string: ${task.rrule}`);
+      if (error instanceof Error) {
+        this.logger.error(`Error message: ${error.message}`);
+        this.logger.error(`Error stack: ${error.stack}`);
+      }
       // Return empty array - this task won't appear in the calendar
-      // but the request will succeed
+      // but the request will succeed (no 500 error)
       return [];
     }
   }
@@ -273,6 +408,7 @@ export class TasksService {
     try {
       const tasks = await this.prisma.task.findMany({
         where: {
+          deletedAt: null, // Exclude soft-deleted tasks
           OR: [
             { rrule: null, startAt: { lt: to }, endAt: { gt: from } },
             { rrule: { not: null } },
@@ -283,8 +419,38 @@ export class TasksService {
           service: true,
           assignedTeam: true,
           createdBy: { select: { id: true, username: true } },
+          overrides: {
+            include: {
+              customer: true,
+              service: true,
+              assignedTeam: true,
+            },
+          },
         },
       });
+
+      // Explicitly fetch overrides for recurring tasks to ensure deleted overrides are loaded
+      const recurringIds = tasks.filter(t => t.rrule).map(t => t.id);
+      if (recurringIds.length > 0) {
+        const overrides = await this.prisma.taskOverride.findMany({
+          where: { seriesId: { in: recurringIds } },
+          include: { customer: true, service: true, assignedTeam: true },
+        });
+        const byTask = new Map<string, typeof overrides>();
+        for (const o of overrides) {
+          const list = byTask.get(o.seriesId) ?? [];
+          list.push(o);
+          byTask.set(o.seriesId, list);
+        }
+        for (const t of tasks) {
+          if (t.rrule) (t as any).overrides = byTask.get(t.id) ?? [];
+        }
+      }
+
+      // #region agent log
+      const overrideCounts = tasks.map(t => ({ taskId: t.id, overrideCount: t.overrides?.length ?? 0, deletedOverrides: t.overrides?.filter(o => o.deletedAt).map(o => ({ originalStartAt: o.originalStartAt.toISOString(), timestamp: o.originalStartAt.getTime() })) ?? [] }));
+      try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'getInRange_after_query',data:{from:from.toISOString(),to:to.toISOString(),taskCount:tasks.length,overrideCounts},hypothesisId:'H1,H3'})+'\n'); } catch(_){}
+      // #endregion
       
       if (this.isDev) {
         this.logger.debug(`Found ${tasks.length} task(s) in database`);
@@ -300,13 +466,21 @@ export class TasksService {
           continue;
         }
         
+        // CRITICAL: Wrap each task expansion in try-catch to prevent one bad task from breaking the entire request
         try {
-          out.push(...this.expandRecurring(t, from, to));
+          const occurrences = this.expandRecurring(t, from, to);
+          out.push(...occurrences);
         } catch (error) {
-          if (this.isDev) {
-            this.logger.error(`Error expanding recurring task ${t.id}:`, error);
+          // Log the error but don't throw - skip this task and continue
+          this.logger.error(`Error expanding recurring task ${t.id} (${t.customerName}):`, error);
+          if (error instanceof Error) {
+            this.logger.error(`Error message: ${error.message}`);
+            this.logger.error(`RRULE string: ${t.rrule || '(null)'}`);
+            if (this.isDev && error.stack) {
+              this.logger.error(`Error stack: ${error.stack}`);
+            }
           }
-          // Skip this task if expansion fails (e.g., invalid rrule)
+          // Skip this task - it won't appear in the calendar but the request will succeed
           continue;
         }
       }
@@ -445,9 +619,38 @@ export class TasksService {
     }
   }
 
-  async update(id: string, dto: UpdateTaskDto) {
-    const existing = await this.prisma.task.findUnique({ where: { id } });
+  async update(
+    id: string,
+    dto: UpdateTaskDto,
+    scope?: 'single' | 'following' | 'all',
+    occurrenceStart?: string,
+  ) {
+    const existing = await this.prisma.task.findUnique({ 
+      where: { id, deletedAt: null } 
+    });
     if (!existing) throw new NotFoundException('Task not found');
+
+    // Handle scope-based updates for recurring tasks
+    if (scope && existing.rrule) {
+      if (!occurrenceStart) {
+        throw new BadRequestException('occurrenceStart is required for scope-based updates on recurring tasks');
+      }
+      const occurrenceDate = new Date(occurrenceStart);
+      if (isNaN(occurrenceDate.getTime())) {
+        throw new BadRequestException('Invalid occurrenceStart date');
+      }
+
+      if (scope === 'single') {
+        // "Only this task" - Create/update a TaskOverride
+        return this.updateSingleOccurrence(existing, dto, occurrenceDate);
+      } else if (scope === 'following') {
+        // "This and following" - Split series
+        return this.updateFollowingOccurrences(existing, dto, occurrenceDate);
+      }
+      // scope === 'all' falls through to normal update
+    }
+
+    // Normal update (non-recurring or scope='all')
     const servicePriceCents: number | null | undefined = dto.servicePriceCents;
     const normalizedServiceId = dto.serviceId !== undefined 
       ? ((dto.serviceId && dto.serviceId.trim()) ? dto.serviceId : null)
@@ -568,10 +771,136 @@ export class TasksService {
     });
   }
 
-  async findOne(id: string) {
-    return this.prisma.task.findUniqueOrThrow({
-      where: { id },
+  /**
+   * Update a single occurrence of a recurring task (scope='single')
+   * Creates or updates a TaskOverride
+   */
+  private async updateSingleOccurrence(
+    existing: { id: string; rrule: string | null },
+    dto: UpdateTaskDto,
+    occurrenceDate: Date,
+  ) {
+    // Prepare override data
+    const overrideData: any = {
+      seriesId: existing.id,
+      originalStartAt: occurrenceDate,
+    };
+
+    // Handle customer updates
+    if (dto.customerId !== undefined) {
+      const customerId = this.normalizeString(dto.customerId);
+      if (customerId) {
+        const customer = await this.prisma.customer.findUniqueOrThrow({
+          where: { id: customerId },
+        });
+        overrideData.customerId = customerId;
+        overrideData.customerName = customer.fullName;
+        overrideData.address = customer.address;
+        overrideData.phone = customer.phone;
+      } else {
+        overrideData.customerId = null;
+        overrideData.customerName = dto.customerName ?? null;
+        overrideData.address = dto.address !== undefined ? this.normalizeString(dto.address) : null;
+        overrideData.phone = dto.phone !== undefined ? this.normalizeString(dto.phone) : null;
+      }
+    } else if (dto.customerName !== undefined || dto.address !== undefined || dto.phone !== undefined) {
+      overrideData.customerName = dto.customerName ?? null;
+      overrideData.address = dto.address !== undefined ? this.normalizeString(dto.address) : null;
+      overrideData.phone = dto.phone !== undefined ? this.normalizeString(dto.phone) : null;
+    }
+
+    // Handle other fields
+    if (dto.serviceId !== undefined) {
+      overrideData.serviceId = dto.serviceId ? this.normalizeString(dto.serviceId) : null;
+      if (overrideData.serviceId) {
+        await this.prisma.service.findUniqueOrThrow({ where: { id: overrideData.serviceId } });
+      }
+    }
+    if (dto.servicePriceCents !== undefined) overrideData.servicePriceCents = dto.servicePriceCents;
+    if (dto.description !== undefined) overrideData.description = dto.description ?? null;
+    if (dto.notes !== undefined) overrideData.notes = dto.notes ?? null;
+    if (dto.allDay !== undefined) overrideData.allDay = dto.allDay;
+    if (dto.assignedTeamId !== undefined) {
+      overrideData.assignedTeamId = dto.assignedTeamId ? this.normalizeString(dto.assignedTeamId) : null;
+    }
+
+    // Handle date updates
+    if (dto.startAt !== undefined) {
+      overrideData.startAt = new Date(dto.startAt);
+    }
+    if (dto.endAt !== undefined) {
+      overrideData.endAt = new Date(dto.endAt);
+    }
+
+    // Upsert the override
+    return this.prisma.taskOverride.upsert({
+      where: {
+        seriesId_originalStartAt: {
+          seriesId: existing.id,
+          originalStartAt: occurrenceDate,
+        },
+      },
+      create: overrideData,
+      update: overrideData,
+    });
+  }
+
+  /**
+   * Update this occurrence and all following (scope='following')
+   * Splits the series: adds UNTIL to original, creates new series starting from occurrence
+   */
+  private async updateFollowingOccurrences(
+    existing: any,
+    dto: UpdateTaskDto,
+    occurrenceDate: Date,
+  ) {
+    // Calculate UNTIL date (end of day before occurrence)
+    const untilDate = new Date(occurrenceDate);
+    untilDate.setUTCDate(untilDate.getUTCDate() - 1);
+    untilDate.setUTCHours(23, 59, 59, 999);
+
+    // Update original series with UNTIL
+    const updatedRrule = this.addUntilToRrule(existing.rrule!, untilDate);
+    await this.prisma.task.update({
+      where: { id: existing.id },
+      data: { rrule: updatedRrule },
+    });
+
+    // Create new series starting from occurrence date
+    const newSeriesData: any = {
+      customerName: dto.customerName ?? existing.customerName,
+      customerId: dto.customerId !== undefined ? this.normalizeString(dto.customerId) : existing.customerId,
+      address: dto.address !== undefined ? this.normalizeString(dto.address) : existing.address,
+      phone: dto.phone !== undefined ? this.normalizeString(dto.phone) : existing.phone,
+      serviceId: dto.serviceId !== undefined ? this.normalizeString(dto.serviceId) : existing.serviceId,
+      servicePriceCents: dto.servicePriceCents ?? existing.servicePriceCents,
+      description: dto.description ?? existing.description,
+      notes: dto.notes ?? existing.notes,
+      startAt: dto.startAt ? new Date(dto.startAt) : occurrenceDate,
+      endAt: dto.endAt ? new Date(dto.endAt) : (() => {
+        const duration = existing.endAt.getTime() - existing.startAt.getTime();
+        return new Date(occurrenceDate.getTime() + duration);
+      })(),
+      allDay: dto.allDay ?? existing.allDay,
+      assignedTeamId: dto.assignedTeamId !== undefined ? this.normalizeString(dto.assignedTeamId) : existing.assignedTeamId,
+      createdById: existing.createdById,
+      rrule: existing.rrule, // Same recurrence rule
+    };
+
+    // Handle customer snapshot if customerId is provided
+    if (newSeriesData.customerId) {
+      const customer = await this.prisma.customer.findUniqueOrThrow({
+        where: { id: newSeriesData.customerId },
+      });
+      newSeriesData.customerName = customer.fullName;
+      newSeriesData.address = customer.address;
+      newSeriesData.phone = customer.phone;
+    }
+
+    return this.prisma.task.create({
+      data: newSeriesData,
       include: {
+        customer: true,
         service: true,
         assignedTeam: true,
         createdBy: { select: { id: true, username: true } },
@@ -579,8 +908,417 @@ export class TasksService {
     });
   }
 
-  async remove(id: string) {
-    await this.prisma.task.findUniqueOrThrow({ where: { id } });
-    return this.prisma.task.delete({ where: { id } });
+  async findOne(id: string) {
+    return this.prisma.task.findUniqueOrThrow({
+      where: { id, deletedAt: null },
+      include: {
+        service: true,
+        assignedTeam: true,
+        createdBy: { select: { id: true, username: true } },
+        overrides: {
+          where: {
+            deletedAt: null,
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Add an excluded date to the exDates array
+   * Normalizes the date to UTC midnight for consistent comparison
+   */
+  private addExdateToArray(exDates: Date[], occurrenceDate: Date): Date[] {
+    // Normalize occurrence date to UTC midnight (start of day)
+    const normalizedDate = new Date(occurrenceDate);
+    normalizedDate.setUTCHours(0, 0, 0, 0);
+    
+    // Normalize existing exdates for comparison
+    const normalizedExDates = exDates.map(d => {
+      const normalized = new Date(d);
+      normalized.setUTCHours(0, 0, 0, 0);
+      return normalized;
+    });
+    
+    // Check if already excluded (compare by date only, ignoring time)
+    const exists = normalizedExDates.some(d => 
+      d.getTime() === normalizedDate.getTime()
+    );
+    
+    if (this.isDev && exists) {
+      this.logger.debug(`Occurrence ${occurrenceDate.toISOString()} is already in exDates`);
+    }
+    
+    if (!exists) {
+      const newExDates = [...exDates, normalizedDate];
+      if (this.isDev) {
+        this.logger.debug(`Adding exdate: ${normalizedDate.toISOString()}, total exdates: ${newExDates.length}`);
+      }
+      return newExDates;
+    }
+    
+    if (this.isDev) {
+      this.logger.debug(`Exdate already exists, returning existing array (${exDates.length} items)`);
+    }
+    return exDates;
+  }
+
+  /**
+   * Add UNTIL to an RRULE string to end the series BEFORE a specific datetime
+   * IMPORTANT: UNTIL must be occurrenceStartAt - 1 second to exclude the clicked occurrence
+   * This matches Google Calendar behavior: "delete this and following" excludes the clicked occurrence
+   */
+  private addUntilToRrule(rrule: string, occurrenceStartAt: Date): string {
+    // Calculate UNTIL as occurrenceStartAt - 1 second (excludes the clicked occurrence)
+    const untilBefore = new Date(occurrenceStartAt);
+    untilBefore.setUTCSeconds(untilBefore.getUTCSeconds() - 1);
+    
+    // Format as iCal datetime: YYYYMMDDTHHMMSSZ
+    const untilStr = untilBefore
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .replace(/\.\d{3}/, '')
+      .replace('Z', '') + 'Z';
+    
+    if (this.isDev) {
+      this.logger.debug(`Setting UNTIL to ${untilStr} (${untilBefore.toISOString()}) to exclude occurrence ${occurrenceStartAt.toISOString()}`);
+    }
+    
+    // Parse existing RRULE
+    const parts = rrule.split(';');
+    const rruleParts: string[] = [];
+    
+    for (const part of parts) {
+      // Remove existing UNTIL and COUNT (they conflict)
+      if (!part.startsWith('UNTIL=') && 
+          !part.startsWith('until=') && 
+          !part.startsWith('COUNT=') && 
+          !part.startsWith('count=')) {
+        rruleParts.push(part);
+      }
+    }
+    
+    // Add UNTIL
+    return [...rruleParts, `UNTIL=${untilStr}`].join(';');
+  }
+
+  async remove(
+    id: string,
+    scope?: 'single' | 'following' | 'all',
+    occurrenceStart?: string,
+  ) {
+    // CRITICAL SAFETY: Validate id is provided and not empty
+    if (!id || typeof id !== 'string' || id.trim() === '') {
+      throw new BadRequestException('Task ID is required and must be a valid string');
+    }
+
+    const existing = await this.prisma.task.findUnique({ 
+      where: { id },
+      select: {
+        id: true,
+        rrule: true,
+        exDates: true,
+        deletedAt: true,
+      },
+    });
+    if (!existing) {
+      throw new NotFoundException('Task not found');
+    }
+    if (existing.deletedAt) {
+      throw new NotFoundException('Task already deleted');
+    }
+
+    // CRITICAL SAFETY: For scope-based operations, validate scope is valid
+    if (scope && scope !== 'single' && scope !== 'following' && scope !== 'all') {
+      throw new BadRequestException(`Invalid scope: ${scope}. Must be 'single', 'following', or 'all'`);
+    }
+
+    // Handle scope-based deletes for recurring tasks
+    if (scope && existing.rrule) {
+      if (scope === 'all') {
+        // "All in series" - Soft delete the entire series
+        if (this.isDev) {
+          this.logger.debug(`Deleting entire series: task ${id}`);
+        }
+        const deletedAtValue = new Date();
+        const result = await this.prisma.task.update({
+          where: { id },
+          data: { deletedAt: deletedAtValue },
+        });
+        
+        // Verify the deletion actually persisted
+        const verify = await this.prisma.task.findUnique({
+          where: { id },
+          select: { deletedAt: true },
+        });
+        
+        if (!verify || !verify.deletedAt) {
+          this.logger.error(`Delete verification failed for series ${id}`);
+          throw new BadRequestException('Failed to persist deletion - database update did not take effect');
+        }
+        
+        if (this.isDev) {
+          this.logger.debug(`Soft deleted series ${id}, deletedAt: ${result.deletedAt} (verified)`);
+        }
+        return { id: result.id, deleted: true, changed: 1 };
+      }
+
+      if (!occurrenceStart) {
+        throw new BadRequestException('occurrenceStart is required for scope-based deletes on recurring tasks');
+      }
+      const occurrenceDate = new Date(occurrenceStart);
+      if (isNaN(occurrenceDate.getTime())) {
+        throw new BadRequestException('Invalid occurrenceStart date');
+      }
+
+      if (scope === 'single') {
+        // "Delete only this occurrence" - Create deletion exception via TaskOverride
+        // This is the Google Calendar approach: store exception, not modify rrule
+        this.logger.debug(`[DELETE SINGLE] Task ${id}, occurrenceStart raw: ${occurrenceStart}`);
+        
+        // Parse occurrenceStartAt from ISO string (ensure it's UTC)
+        const occurrenceStartAt = new Date(occurrenceStart);
+        if (isNaN(occurrenceStartAt.getTime())) {
+          throw new BadRequestException(`Invalid occurrenceStart date: ${occurrenceStart}`);
+        }
+        
+        this.logger.debug(`[DELETE SINGLE] Parsed occurrenceStartAt ISO: ${occurrenceStartAt.toISOString()}`);
+        this.logger.debug(`[DELETE SINGLE] Parsed occurrenceStartAt timestamp: ${occurrenceStartAt.getTime()}`);
+        
+        // Normalize occurrenceDate to seconds precision to match RRule-generated occurrences
+        // This ensures reliable matching during expansion
+        const normalizedOccurrenceDate = new Date(occurrenceStartAt);
+        normalizedOccurrenceDate.setUTCMilliseconds(0);
+        
+        this.logger.debug(`[DELETE SINGLE] Normalized occurrenceStartAt ISO: ${normalizedOccurrenceDate.toISOString()}`);
+        this.logger.debug(`[DELETE SINGLE] Normalized occurrenceStartAt timestamp: ${normalizedOccurrenceDate.getTime()}`);
+        
+        // Upsert TaskOverride with deletedAt set (marks this occurrence as deleted)
+        const override = await this.prisma.taskOverride.upsert({
+          where: {
+            seriesId_originalStartAt: {
+              seriesId: id,
+              originalStartAt: normalizedOccurrenceDate,
+            },
+          },
+          create: {
+            seriesId: id,
+            originalStartAt: normalizedOccurrenceDate,
+            deletedAt: new Date(), // Mark as deleted
+          },
+          update: {
+            deletedAt: new Date(), // Update deletedAt if override already exists
+          },
+        });
+        
+        this.logger.debug(`[DELETE SINGLE] Upserted override with id: ${override.id}`);
+        
+        // Verify the override was created/updated correctly - query DB to confirm
+        const verifyOverride = await this.prisma.taskOverride.findUnique({
+          where: {
+            seriesId_originalStartAt: {
+              seriesId: id,
+              originalStartAt: normalizedOccurrenceDate,
+            },
+          },
+        });
+        
+        if (!verifyOverride) {
+          this.logger.error(`[DELETE SINGLE] CRITICAL: Override not found after upsert for taskId ${id} originalStartAt ${normalizedOccurrenceDate.toISOString()}`);
+          throw new BadRequestException('Failed to create deletion override - override not found');
+        }
+        
+        if (!verifyOverride.deletedAt) {
+          this.logger.error(`[DELETE SINGLE] CRITICAL: Override exists but deletedAt is null for taskId ${id} originalStartAt ${normalizedOccurrenceDate.toISOString()}`);
+          throw new BadRequestException('Failed to create deletion override - deletedAt is null');
+        }
+        
+        // Log the saved values from DB
+        this.logger.debug(`[DELETE SINGLE] Verified override from DB:`);
+        this.logger.debug(`[DELETE SINGLE]   - originalStartAt ISO: ${verifyOverride.originalStartAt.toISOString()}`);
+        this.logger.debug(`[DELETE SINGLE]   - originalStartAt timestamp: ${verifyOverride.originalStartAt.getTime()}`);
+        this.logger.debug(`[DELETE SINGLE]   - deletedAt ISO: ${verifyOverride.deletedAt.toISOString()}`);
+        this.logger.debug(`[DELETE SINGLE]   - isDeleted: ${verifyOverride.deletedAt !== null}`);
+        
+        // Count total overrides for this series (for logging)
+        const overrideCount = await this.prisma.taskOverride.count({
+          where: {
+            seriesId: id,
+            deletedAt: { not: null },
+          },
+        });
+        
+        this.logger.debug(`[DELETE SINGLE] Created override isDeleted=true for taskId ${id} originalStartAt ${normalizedOccurrenceDate.toISOString()}, overrideId: ${override.id}, total deleted overrides for series: ${overrideCount}`);
+        
+        // #region agent log
+        try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'DELETE_SINGLE_exit',data:{taskId:id,scope:'single',occurrenceStartRaw:occurrenceStart,normalizedISO:normalizedOccurrenceDate.toISOString(),normalizedTimestamp:normalizedOccurrenceDate.getTime(),overrideId:override.id,verifyOriginalStartAtISO:verifyOverride.originalStartAt.toISOString(),verifyOriginalStartAtTimestamp:verifyOverride.originalStartAt.getTime()},hypothesisId:'H1,H5'})+'\n'); } catch(e){ this.logger.warn('Debug log failed: '+String(e)); }
+        // #endregion
+        
+        return { id, deleted: true, changed: 1, overrideId: override.id };
+      } else if (scope === 'following') {
+        // "Delete this and following" - Google Calendar behavior:
+        // 1. Set UNTIL to occurrenceStartAt - 1 second (excludes clicked occurrence and all future)
+        // 2. Also create deletion exception for the clicked occurrence (safety/reliability)
+        // 3. Delete any future overrides
+        
+        // Check if occurrenceStartAt equals series dtstart (edge case)
+        const seriesTask = await this.prisma.task.findUnique({
+          where: { id },
+          select: { startAt: true },
+        });
+        
+        if (seriesTask && occurrenceDate.getTime() === seriesTask.startAt.getTime()) {
+          // Clicked occurrence is the first one - delete entire series
+          if (this.isDev) {
+            this.logger.debug(`Occurrence ${occurrenceStart} is the series start - deleting entire series`);
+          }
+          const deletedAtValue = new Date();
+          const result = await this.prisma.task.update({
+            where: { id },
+            data: { deletedAt: deletedAtValue },
+          });
+          
+          const verify = await this.prisma.task.findUnique({
+            where: { id },
+            select: { deletedAt: true },
+          });
+          
+          if (!verify || !verify.deletedAt) {
+            throw new BadRequestException('Failed to persist deletion');
+          }
+          
+          return { id: result.id, deleted: true, changed: 1 };
+        }
+        
+        // Set UNTIL to occurrenceStartAt - 1 second (excludes clicked occurrence)
+        // addUntilToRrule already subtracts 1 second, so pass occurrenceDate directly
+        const updatedRrule = this.addUntilToRrule(existing.rrule, occurrenceDate);
+        
+        // Calculate what UNTIL will be (for logging)
+        const untilDate = new Date(occurrenceDate);
+        untilDate.setUTCSeconds(untilDate.getUTCSeconds() - 1);
+        
+        this.logger.debug(`[DELETE FOLLOWING] Task ${id}, occurrenceStart: ${occurrenceStart}`);
+        this.logger.debug(`[DELETE FOLLOWING] occurrenceStart timestamp: ${occurrenceDate.getTime()}`);
+        this.logger.debug(`[DELETE FOLLOWING] UNTIL will be: ${untilDate.toISOString()} (timestamp: ${untilDate.getTime()})`);
+        this.logger.debug(`[DELETE FOLLOWING] Updated RRULE: ${updatedRrule}`);
+        
+        const result = await this.prisma.task.update({
+          where: { id },
+          data: { rrule: updatedRrule },
+        });
+        
+        // Verify the update persisted
+        const verifyTask = await this.prisma.task.findUnique({
+          where: { id },
+          select: { rrule: true },
+        });
+        
+        if (!verifyTask || verifyTask.rrule !== updatedRrule) {
+          this.logger.error(`[DELETE FOLLOWING] CRITICAL: RRULE update verification failed for taskId ${id}`);
+          throw new BadRequestException('Failed to update RRULE');
+        }
+        
+        // Normalize occurrenceDate to seconds precision to match RRule-generated occurrences
+        const normalizedOccurrenceDate = new Date(occurrenceDate);
+        normalizedOccurrenceDate.setUTCMilliseconds(0);
+        
+        // Create deletion exception for the clicked occurrence (safety/reliability)
+        const override = await this.prisma.taskOverride.upsert({
+          where: {
+            seriesId_originalStartAt: {
+              seriesId: id,
+              originalStartAt: normalizedOccurrenceDate,
+            },
+          },
+          create: {
+            seriesId: id,
+            originalStartAt: normalizedOccurrenceDate,
+            deletedAt: new Date(),
+          },
+          update: {
+            deletedAt: new Date(),
+          },
+        });
+        
+        // Verify override was created
+        const verifyOverride = await this.prisma.taskOverride.findUnique({
+          where: {
+            seriesId_originalStartAt: {
+              seriesId: id,
+              originalStartAt: normalizedOccurrenceDate,
+            },
+          },
+        });
+        
+        if (!verifyOverride || !verifyOverride.deletedAt) {
+          this.logger.error(`[DELETE FOLLOWING] CRITICAL: Override verification failed for taskId ${id}`);
+          throw new BadRequestException('Failed to create deletion override');
+        }
+        
+        if (this.isDev) {
+          this.logger.debug(`Created deletion exception for clicked occurrence ${normalizedOccurrenceDate.toISOString()}`);
+        }
+        
+        // Also soft-delete any future overrides (occurrences after the clicked one)
+        // Use normalized date for comparison
+        const deletedOverrides = await this.prisma.taskOverride.updateMany({
+          where: {
+            seriesId: id,
+            originalStartAt: { gt: normalizedOccurrenceDate },
+            deletedAt: null,
+          },
+          data: { deletedAt: new Date() },
+        });
+        
+        if (this.isDev) {
+          this.logger.debug(`Updated task ${id} RRULE with UNTIL, created deletion exception, deleted ${deletedOverrides.count} future override(s)`);
+        }
+        
+        return { 
+          id: result.id, 
+          deleted: true, 
+          changed: 1, 
+          deletedOverrides: deletedOverrides.count + 1 // +1 for the clicked occurrence exception
+        };
+      }
+    }
+
+    // CRITICAL SAFETY: Normal delete ONLY for one-time tasks (existing.rrule is null)
+    // ALWAYS use soft delete - NEVER hard delete
+    if (existing.rrule && !scope) {
+      throw new BadRequestException('Cannot delete recurring task without scope. Use scope=single, scope=following, or scope=all');
+    }
+
+    if (this.isDev) {
+      this.logger.debug(`Soft deleting one-time task ${id}`);
+    }
+    
+    const deletedAtValue = new Date();
+    const result = await this.prisma.task.update({
+      where: { id },
+      data: { deletedAt: deletedAtValue },
+    });
+    
+    if (!result.deletedAt) {
+      throw new BadRequestException('Failed to delete task - deletedAt was not set');
+    }
+    
+    // Verify the deletion actually persisted
+    const verify = await this.prisma.task.findUnique({
+      where: { id },
+      select: { deletedAt: true },
+    });
+    
+    if (!verify || !verify.deletedAt) {
+      this.logger.error(`Delete verification failed for task ${id}`);
+      throw new BadRequestException('Failed to persist deletion - database update did not take effect');
+    }
+    
+    if (this.isDev) {
+      this.logger.debug(`Soft deleted task ${id}, deletedAt: ${result.deletedAt} (verified)`);
+    }
+    
+    return { id: result.id, deleted: true, changed: 1 };
   }
 }

@@ -27,9 +27,23 @@ export async function api<T>(
   const res = await fetch(url, { ...init, headers, credentials: 'include' });
   
   if (!res.ok) {
-    const j = await res.json().catch(() => ({}));
-    const errorMessage = (j as { message?: string }).message ?? res.statusText;
-    console.error(`[API ERROR] ${res.status} ${res.statusText} on ${path}:`, j);
+    // Read body once (can only be consumed once)
+    let errorText = '';
+    try {
+      errorText = await res.text();
+    } catch {
+      errorText = '(could not read response body)';
+    }
+    let errorData: any = {};
+    if (errorText.trim()) {
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { message: errorText };
+      }
+    }
+    const errorMessage = (errorData?.message ?? errorData?.error ?? errorText) || res.statusText;
+    console.error(`[API ERROR] ${res.status} ${res.statusText} on ${path}:`, (errorData?.message ?? errorData?.error ?? errorText) || '(no error details)');
     throw new Error(errorMessage);
   }
   
@@ -177,11 +191,23 @@ export const tasks = {
     assignedTeamId?: string;
     rrule?: string;
   }) => api<unknown>('/api/tasks', { method: 'POST', body: JSON.stringify(d) }),
-  update: (id: string, d: Record<string, unknown>) =>
-    api<unknown>(`/api/tasks/${id}`, {
+  update: (id: string, d: Record<string, unknown>, scope?: 'single' | 'following' | 'all', occurrenceStart?: string) => {
+    const params = new URLSearchParams();
+    if (scope) params.set('scope', scope);
+    if (occurrenceStart) params.set('occurrenceStart', occurrenceStart);
+    const query = params.toString();
+    return api<unknown>(`/api/tasks/${id}${query ? `?${query}` : ''}`, {
       method: 'PATCH',
       body: JSON.stringify(d),
-    }),
-  delete: (id: string) =>
-    api<void>(`/api/tasks/${id}`, { method: 'DELETE' }),
+    });
+  },
+  delete: (id: string, scope?: 'single' | 'following' | 'all', occurrenceStart?: string) => {
+    const params = new URLSearchParams();
+    if (scope) params.set('scope', scope);
+    if (occurrenceStart) params.set('occurrenceStart', occurrenceStart);
+    const query = params.toString();
+    const url = `/api/tasks/${id}${query ? `?${query}` : ''}`;
+    console.log(`[DELETE TASK] ${url}`, { scope, occurrenceStart });
+    return api<{ ok: boolean; id: string; deleted: boolean; changed: number }>(url, { method: 'DELETE' });
+  },
 };

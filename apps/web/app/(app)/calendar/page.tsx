@@ -34,10 +34,17 @@ export default function CalendarPage() {
 
   const loadTasks = useCallback(() => {
     setLoading(true);
+    console.log(`[LOAD TASKS] Fetching tasks from ${rangeStartUtc.toISOString()} to ${rangeEndUtc.toISOString()}`);
     tasks
       .list(rangeStartUtc.toISOString(), rangeEndUtc.toISOString())
-      .then(setOccurrences)
-      .catch(() => setOccurrences([]))
+      .then((occ) => {
+        console.log(`[LOAD TASKS] Received ${occ.length} occurrences`);
+        setOccurrences(occ);
+      })
+      .catch((err) => {
+        console.error('[LOAD TASKS ERROR]', err);
+        setOccurrences([]);
+      })
       .finally(() => setLoading(false));
   }, [rangeStartUtc.toISOString(), rangeEndUtc.toISOString()]);
 
@@ -198,6 +205,95 @@ function DayDrawer({
 }) {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deletingOccurrence, setDeletingOccurrence] = useState<TaskOccurrence | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const handleDeleteClick = (occurrence: TaskOccurrence) => {
+    setDeletingOccurrence(occurrence);
+    setShowDeleteModal(true);
+  };
+
+  const handleDeleteConfirm = async (scope: 'single' | 'following' | 'all') => {
+    if (!deletingOccurrence) return;
+
+    setDeleting(true);
+    try {
+      // Ensure occurrenceStart is sent as UTC ISO string
+      const occurrenceStartAt = deletingOccurrence.occurrenceStart; // Already ISO string from API
+      console.log(`[DELETE] Deleting task ${deletingOccurrence.taskId} with scope=${scope}, occurrenceStart=${occurrenceStartAt}`);
+      
+      const result = await tasks.delete(
+        deletingOccurrence.taskId,
+        scope,
+        occurrenceStartAt,
+      );
+      console.log(`[DELETE] Response:`, result);
+      
+      // Verify deletion was successful
+      if (!result || (result as any).changed === 0) {
+        throw new Error('Delete operation did not change any records');
+      }
+      
+      console.log(`[DELETE] Success - task ${deletingOccurrence.taskId}, scope=${scope}, changed=${(result as any).changed}`);
+      showToast('Task deleted', 'success');
+      
+      // Force refresh calendar data - ensure DB changes are visible
+      // Small delay to ensure DB transaction is committed
+      await new Promise(resolve => setTimeout(resolve, 200));
+      // Call onTaskChange which triggers loadTasks to refetch from API
+      onTaskChange();
+      setShowDeleteModal(false);
+      setDeletingOccurrence(null);
+    } catch (err) {
+      console.error('[DELETE ERROR]', err);
+      showToast(err instanceof Error ? err.message : 'Failed to delete task', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteNonRecurring = async () => {
+    if (!deletingOccurrence) return;
+
+    if (!confirm('Delete this task?')) {
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      console.log(`[DELETE] Deleting non-recurring task ${deletingOccurrence.taskId}`);
+      const result = await tasks.delete(deletingOccurrence.taskId);
+      console.log(`[DELETE] Response:`, result);
+      
+      // Verify deletion was successful
+      if (!result || (result as any).changed === 0) {
+        throw new Error('Delete operation did not change any records');
+      }
+      
+      console.log(`[DELETE] Success - task ${deletingOccurrence.taskId}, changed=${(result as any).changed}`);
+      showToast('Task deleted', 'success');
+      
+      // Force refresh calendar data - ensure DB changes are visible
+      // Small delay to ensure DB transaction is committed
+      await new Promise(resolve => setTimeout(resolve, 200));
+      // Call onTaskChange which triggers loadTasks to refetch from API
+      onTaskChange();
+      setShowDeleteModal(false);
+      setDeletingOccurrence(null);
+    } catch (err) {
+      console.error('[DELETE ERROR]', err);
+      showToast(err instanceof Error ? err.message : 'Failed to delete task', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <>
@@ -243,15 +339,23 @@ function DayDrawer({
                     {o.service?.name ?? 'No service'} · {o.servicePriceCents !== null ? `$${(o.servicePriceCents / 100).toFixed(2)}` : '—'} · {o.phone ? `${o.phone} · ` : ''}{o.createdBy.username}
                   </div>
                 </div>
-                <button
-                  onClick={() => {
-                    setEditingId(o.taskId);
-                    setShowModal(true);
-                  }}
-                  className="ml-2 rounded px-2 py-1 text-sm text-blue-600 hover:bg-blue-50"
-                >
-                  Edit
-                </button>
+                <div className="ml-2 flex gap-1">
+                  <button
+                    onClick={() => {
+                      setEditingId(o.taskId);
+                      setShowModal(true);
+                    }}
+                    className="rounded px-2 py-1 text-sm text-blue-600 hover:bg-blue-50"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDeleteClick(o)}
+                    className="rounded px-2 py-1 text-sm text-red-600 hover:bg-red-50"
+                  >
+                    Delete
+                  </button>
+                </div>
               </li>
             ))}
             {occurrences.length === 0 && (
@@ -277,6 +381,142 @@ function DayDrawer({
           }}
         />
       )}
+      {showDeleteModal && deletingOccurrence && (
+        <DeleteConfirmationModal
+          occurrence={deletingOccurrence}
+          onConfirm={deletingOccurrence.rrule ? handleDeleteConfirm : handleDeleteNonRecurring}
+          onCancel={() => {
+            setShowDeleteModal(false);
+            setDeletingOccurrence(null);
+          }}
+          deleting={deleting}
+        />
+      )}
+      {toast && (
+        <div
+          className={`fixed bottom-4 right-4 z-50 rounded-lg px-4 py-2 shadow-lg ${
+            toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+    </>
+  );
+}
+
+function DeleteConfirmationModal({
+  occurrence,
+  onConfirm,
+  onCancel,
+  deleting,
+}: {
+  occurrence: TaskOccurrence;
+  onConfirm: ((scope: 'single' | 'following' | 'all') => void) | (() => void);
+  onCancel: () => void;
+  deleting: boolean;
+}) {
+  const isRecurring = !!occurrence.rrule;
+  const [selectedScope, setSelectedScope] = useState<'single' | 'following' | 'all'>('single');
+
+  const handleConfirm = () => {
+    if (isRecurring && typeof onConfirm === 'function' && onConfirm.length === 1) {
+      (onConfirm as (scope: 'single' | 'following' | 'all') => void)(selectedScope);
+    } else {
+      (onConfirm as () => void)();
+    }
+  };
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/30"
+        onClick={onCancel}
+        aria-hidden
+      />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div
+          className="w-full max-w-md rounded-lg bg-white shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="border-b border-gray-200 px-6 py-4">
+            <h3 className="text-lg font-semibold text-gray-800">Delete Task</h3>
+          </div>
+          <div className="px-6 py-4">
+            {isRecurring ? (
+              <>
+                <p className="mb-4 text-sm text-gray-600">
+                  This task is part of a recurring series. What would you like to delete?
+                </p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-3 rounded border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="deleteScope"
+                      value="single"
+                      checked={selectedScope === 'single'}
+                      onChange={() => setSelectedScope('single')}
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-medium text-gray-800">Only this task</div>
+                      <div className="text-xs text-gray-500">Current occurrence only</div>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="deleteScope"
+                      value="following"
+                      checked={selectedScope === 'following'}
+                      onChange={() => setSelectedScope('following')}
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-medium text-gray-800">This and following</div>
+                      <div className="text-xs text-gray-500">From this occurrence forward</div>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="deleteScope"
+                      value="all"
+                      checked={selectedScope === 'all'}
+                      onChange={() => setSelectedScope('all')}
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-medium text-gray-800">All in series</div>
+                      <div className="text-xs text-gray-500">Entire recurrence series</div>
+                    </div>
+                  </label>
+                </div>
+              </>
+            ) : (
+              <p className="mb-4 text-sm text-gray-600">
+                Are you sure you want to delete this task?
+              </p>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 border-t border-gray-200 px-6 py-4">
+            <button
+              onClick={onCancel}
+              disabled={deleting}
+              className="rounded px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={deleting}
+              className="rounded px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50"
+            >
+              {deleting ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </div>
     </>
   );
 }

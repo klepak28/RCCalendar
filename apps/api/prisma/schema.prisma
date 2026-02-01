@@ -24,6 +24,7 @@ model Service {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tasks     Task[]
+  taskOverrides TaskOverride[]
 }
 
 model Team {
@@ -33,6 +34,7 @@ model Team {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tasks     Task[]
+  taskOverrides TaskOverride[]
 }
 
 model Customer {
@@ -43,6 +45,7 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tasks     Task[]
+  taskOverrides TaskOverride[]
 }
 
 model Task {
@@ -66,5 +69,38 @@ model Task {
   createdBy         User     @relation(fields: [createdById], references: [id])
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
-  rrule             String?  // iCalendar RRULE; null = one-time
+  rrule             String?  // iCalendar RRULE (RRULE only, no EXDATE); null = one-time
+  exDates           DateTime[] // Excluded occurrence dates (for "delete only this")
+  deletedAt         DateTime?  // Soft delete
+  overrides         TaskOverride[] // Overridden occurrences (for "edit only this")
+}
+
+model TaskOverride {
+  id                String   @id @default(cuid())
+  seriesId          String   // FK to Task.id (the recurring series)
+  originalStartAt   DateTime // The occurrence date/time being overridden
+  // Overridden fields (null = use series default)
+  customerName      String?
+  customerId        String?
+  customer          Customer? @relation(fields: [customerId], references: [id])
+  address           String?
+  phone             String?
+  serviceId         String?
+  service           Service? @relation(fields: [serviceId], references: [id])
+  servicePriceCents Int?
+  description       String?
+  notes             String?
+  startAt           DateTime? // Can be different if user "moves" only this occurrence
+  endAt             DateTime?
+  allDay            Boolean?
+  assignedTeamId    String?
+  assignedTeam      Team?    @relation(fields: [assignedTeamId], references: [id])
+  deletedAt         DateTime? // Soft delete (for "delete only this")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  series            Task     @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  
+  @@unique([seriesId, originalStartAt]) // One override per occurrence
+  @@index([seriesId])
+  @@index([originalStartAt])
 }

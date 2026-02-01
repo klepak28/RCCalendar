@@ -1,3 +1,5 @@
+import { appendFileSync } from 'fs';
+import { join } from 'path';
 import {
   Body,
   Controller,
@@ -97,12 +99,68 @@ export class TasksController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateTaskDto) {
-    return this.tasks.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTaskDto,
+    @Query('scope') scope: 'single' | 'following' | 'all' | undefined,
+    @Query('occurrenceStart') occurrenceStart: string | undefined,
+  ) {
+    return this.tasks.update(id, dto, scope, occurrenceStart);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.tasks.remove(id);
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: { id: string } | null,
+    @Query('scope') scope: 'single' | 'following' | 'all' | undefined,
+    @Query('occurrenceStart') occurrenceStart: string | undefined,
+  ) {
+    // Validate occurrenceStartAt is present when scope=single or scope=following
+    if ((scope === 'single' || scope === 'following') && !occurrenceStart) {
+      throw new BadRequestException('occurrenceStart is required when scope is "single" or "following"');
+    }
+    
+    // Parse and validate occurrenceStartAt
+    let occurrenceStartAt: Date | undefined;
+    if (occurrenceStart) {
+      occurrenceStartAt = new Date(occurrenceStart);
+      if (isNaN(occurrenceStartAt.getTime())) {
+        throw new BadRequestException(`Invalid occurrenceStart date: ${occurrenceStart}. Expected ISO-8601 format (e.g., 2026-01-29T15:00:00.000Z)`);
+      }
+    }
+    
+    // Get user ID from CurrentUser decorator (set by JwtAuthGuard)
+    const userId = user?.id || 'unknown';
+    
+    // #region agent log
+    try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'DELETE_entry',data:{taskId:id,scope,occurrenceStart,userId},hypothesisId:'H4'})+'\n'); } catch(_){}
+    // #endregion
+    
+    // Enhanced logging for debugging
+    this.logger.debug(`[DELETE HANDLER] taskId=${id} scope=${scope} occurrenceStart=${occurrenceStart} userId=${userId}`);
+    if (occurrenceStartAt) {
+      this.logger.debug(`[DELETE HANDLER] Parsed occurrenceStartAt ISO: ${occurrenceStartAt.toISOString()}`);
+      this.logger.debug(`[DELETE HANDLER] Parsed occurrenceStartAt timestamp: ${occurrenceStartAt.getTime()}`);
+    }
+    
+    try {
+      const result = await this.tasks.remove(id, scope, occurrenceStart);
+      
+      // Verify that deletion actually happened
+      if (result.changed === 0) {
+        this.logger.warn(`Delete operation for task ${id} affected 0 rows`);
+        throw new BadRequestException('Delete operation did not change any records');
+      }
+      
+      this.logger.debug(`Delete successful for task ${id}, changed: ${result.changed}`);
+      
+      return { ok: true, ...result };
+    } catch (error) {
+      this.logger.error(`Delete failed for task ${id}:`, error);
+      if (error instanceof Error) {
+        this.logger.error('Stack:', error.stack);
+      }
+      throw error;
+    }
   }
 }
