@@ -1,6 +1,4 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
-import { appendFileSync } from 'fs';
-import { join } from 'path';
 import { rrulestr, RRuleSet, RRule } from 'rrule';
 import { addMilliseconds, differenceInMilliseconds } from 'date-fns';
 import { PrismaService } from '../prisma/prisma.service';
@@ -327,32 +325,23 @@ export class TasksService {
         this.logger.debug(`[EXPAND] Deleted timestamps: ${Array.from(deletedOverrideSet).join(', ')}`);
       }
       
-      // #region agent log
-      const occTimestamps = occDates.map(d => { const n = new Date(d); n.setUTCMilliseconds(0); return n.getTime(); });
-      try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'expandRecurring_before_filter',data:{taskId:task.id,overrideCount:task.overrides?.length ?? 0,deletedOverrideTimestamps:Array.from(deletedOverrideSet),occDatesCount:occDates.length,firstOccTimestamps:occTimestamps.slice(0,10),matchCheck:occTimestamps.filter(ts=>deletedOverrideSet.has(ts)).length},hypothesisId:'H2'})+'\n'); } catch(_){}
-      // #endregion
       
       // Filter out occurrences that have deletion exceptions (deletedAt is set)
       // Compare using getTime() for exact timestamp matching
-      return occDates
+      const baseOccs = occDates
         .map((d) => {
           const start = new Date(d);
           const end = addMilliseconds(start, durationMs);
-          // Normalize to seconds precision for reliable matching with overrides
           const normalizedStart = new Date(start);
           normalizedStart.setUTCMilliseconds(0);
-          const occurrenceTimestamp = normalizedStart.getTime(); // Use timestamp for matching
+          const occurrenceTimestamp = normalizedStart.getTime();
           
-          // Check deleted overrides first using timestamp comparison
           if (deletedOverrideSet.has(occurrenceTimestamp)) {
             this.logger.debug(`[EXPAND] Skipping occurrence due to deleted override: taskId ${task.id} occStart ${normalizedStart.toISOString()} (timestamp: ${occurrenceTimestamp})`);
             return null;
           }
           
-          // Check regular overrides for field overrides
           const override = overrideMap.get(occurrenceTimestamp);
-          
-          // If there's an override, use override values; otherwise use series defaults
           return {
             taskId: task.id,
             occurrenceStart: (override?.startAt || start).toISOString(),
@@ -374,7 +363,51 @@ export class TasksService {
             rrule: task.rrule,
           };
         })
-        .filter((occ): occ is TaskOccurrence => occ !== null); // Remove null entries
+        .filter((occ): occ is TaskOccurrence => occ !== null);
+
+      const outputSet = new Set<string>();
+      const base: TaskOccurrence[] = [];
+      for (const occ of baseOccs) {
+        base.push(occ);
+        outputSet.add(`${task.id}-${occ.occurrenceStart}`);
+      }
+
+      for (const override of (task.overrides ?? [])) {
+        const ov = override as { deletedAt?: Date | null; startAt?: Date | null; originalStartAt: Date };
+        if (ov.deletedAt) continue;
+        const overrideStart = ov.startAt ? new Date(ov.startAt) : null;
+        if (!overrideStart || overrideStart < from || overrideStart >= to) continue;
+        const key = `${task.id}-${overrideStart.toISOString()}`;
+        if (outputSet.has(key)) continue;
+        const overrideStartNorm = new Date(overrideStart);
+        overrideStartNorm.setUTCMilliseconds(0);
+        const overrideEnd = (override as { endAt?: Date | null }).endAt
+          ? new Date((override as { endAt: Date }).endAt)
+          : addMilliseconds(overrideStartNorm, durationMs);
+        base.push({
+          taskId: task.id,
+          occurrenceStart: overrideStartNorm.toISOString(),
+          occurrenceEnd: overrideEnd.toISOString(),
+          customerName: override.customerName ?? task.customerName,
+          customerId: override.customerId ?? task.customerId,
+          address: override.address ?? task.address,
+          phone: override.phone ?? task.phone,
+          serviceId: override.serviceId ?? task.serviceId,
+          service: override.service ?? task.service,
+          servicePriceCents: override.servicePriceCents ?? task.servicePriceCents,
+          description: override.description ?? task.description,
+          notes: override.notes ?? task.notes,
+          allDay: override.allDay ?? task.allDay,
+          assignedTeamId: override.assignedTeamId ?? task.assignedTeamId,
+          assignedTeam: override.assignedTeam ?? task.assignedTeam,
+          createdById: task.createdById,
+          createdBy: task.createdBy,
+          rrule: task.rrule,
+        });
+        outputSet.add(key);
+      }
+
+      return base;
     } catch (error) {
       // CRITICAL: Don't let one malformed recurrence break the entire request
       this.logger.error(`Error expanding recurring task ${task.id}:`, error);
@@ -447,10 +480,6 @@ export class TasksService {
         }
       }
 
-      // #region agent log
-      const overrideCounts = tasks.map(t => ({ taskId: t.id, overrideCount: t.overrides?.length ?? 0, deletedOverrides: t.overrides?.filter(o => o.deletedAt).map(o => ({ originalStartAt: o.originalStartAt.toISOString(), timestamp: o.originalStartAt.getTime() })) ?? [] }));
-      try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'getInRange_after_query',data:{from:from.toISOString(),to:to.toISOString(),taskCount:tasks.length,overrideCounts},hypothesisId:'H1,H3'})+'\n'); } catch(_){}
-      // #endregion
       
       if (this.isDev) {
         this.logger.debug(`Found ${tasks.length} task(s) in database`);
@@ -630,20 +659,18 @@ export class TasksService {
     });
     if (!existing) throw new NotFoundException('Task not found');
 
-    // Handle scope-based updates for recurring tasks
     if (scope && existing.rrule) {
-      if (!occurrenceStart) {
-        throw new BadRequestException('occurrenceStart is required for scope-based updates on recurring tasks');
+      if ((scope === 'single' || scope === 'following') && !occurrenceStart) {
+        throw new BadRequestException('occurrenceStart is required when scope is "single" or "following"');
       }
-      const occurrenceDate = new Date(occurrenceStart);
-      if (isNaN(occurrenceDate.getTime())) {
+      const occurrenceDate = occurrenceStart ? new Date(occurrenceStart) : null;
+      if (occurrenceDate && isNaN(occurrenceDate.getTime())) {
         throw new BadRequestException('Invalid occurrenceStart date');
       }
 
-      if (scope === 'single') {
-        // "Only this task" - Create/update a TaskOverride
+      if (scope === 'single' && occurrenceDate) {
         return this.updateSingleOccurrence(existing, dto, occurrenceDate);
-      } else if (scope === 'following') {
+      } else if (scope === 'following' && occurrenceDate) {
         // "This and following" - Split series
         return this.updateFollowingOccurrences(existing, dto, occurrenceDate);
       }
@@ -780,10 +807,12 @@ export class TasksService {
     dto: UpdateTaskDto,
     occurrenceDate: Date,
   ) {
-    // Prepare override data
+    const normalizedDate = new Date(occurrenceDate);
+    normalizedDate.setUTCMilliseconds(0);
+
     const overrideData: any = {
       seriesId: existing.id,
-      originalStartAt: occurrenceDate,
+      originalStartAt: normalizedDate,
     };
 
     // Handle customer updates
@@ -832,12 +861,11 @@ export class TasksService {
       overrideData.endAt = new Date(dto.endAt);
     }
 
-    // Upsert the override
     return this.prisma.taskOverride.upsert({
       where: {
         seriesId_originalStartAt: {
           seriesId: existing.id,
-          originalStartAt: occurrenceDate,
+          originalStartAt: normalizedDate,
         },
       },
       create: overrideData,
@@ -854,13 +882,7 @@ export class TasksService {
     dto: UpdateTaskDto,
     occurrenceDate: Date,
   ) {
-    // Calculate UNTIL date (end of day before occurrence)
-    const untilDate = new Date(occurrenceDate);
-    untilDate.setUTCDate(untilDate.getUTCDate() - 1);
-    untilDate.setUTCHours(23, 59, 59, 999);
-
-    // Update original series with UNTIL
-    const updatedRrule = this.addUntilToRrule(existing.rrule!, untilDate);
+    const updatedRrule = this.addUntilToRrule(existing.rrule!, occurrenceDate);
     await this.prisma.task.update({
       where: { id: existing.id },
       data: { rrule: updatedRrule },
@@ -1149,10 +1171,6 @@ export class TasksService {
         });
         
         this.logger.debug(`[DELETE SINGLE] Created override isDeleted=true for taskId ${id} originalStartAt ${normalizedOccurrenceDate.toISOString()}, overrideId: ${override.id}, total deleted overrides for series: ${overrideCount}`);
-        
-        // #region agent log
-        try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'DELETE_SINGLE_exit',data:{taskId:id,scope:'single',occurrenceStartRaw:occurrenceStart,normalizedISO:normalizedOccurrenceDate.toISOString(),normalizedTimestamp:normalizedOccurrenceDate.getTime(),overrideId:override.id,verifyOriginalStartAtISO:verifyOverride.originalStartAt.toISOString(),verifyOriginalStartAtTimestamp:verifyOverride.originalStartAt.getTime()},hypothesisId:'H1,H5'})+'\n'); } catch(e){ this.logger.warn('Debug log failed: '+String(e)); }
-        // #endregion
         
         return { id, deleted: true, changed: 1, overrideId: override.id };
       } else if (scope === 'following') {

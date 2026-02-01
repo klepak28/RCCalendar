@@ -205,6 +205,7 @@ function DayDrawer({
 }) {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingOccurrence, setEditingOccurrence] = useState<TaskOccurrence | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deletingOccurrence, setDeletingOccurrence] = useState<TaskOccurrence | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -317,10 +318,11 @@ function DayDrawer({
         </div>
         <div className="p-4">
           <button
-            onClick={() => {
-              setEditingId(null);
-              setShowModal(true);
-            }}
+          onClick={() => {
+            setEditingOccurrence(null);
+            setEditingId(null);
+            setShowModal(true);
+          }}
             className="mb-4 w-full rounded-lg border border-blue-600 bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700"
           >
             Add task
@@ -342,6 +344,7 @@ function DayDrawer({
                 <div className="ml-2 flex gap-1">
                   <button
                     onClick={() => {
+                      setEditingOccurrence(o);
                       setEditingId(o.taskId);
                       setShowModal(true);
                     }}
@@ -370,14 +373,17 @@ function DayDrawer({
         <TaskModal
           date={date}
           taskId={editingId}
+          occurrence={editingOccurrence ?? undefined}
           onClose={() => {
             setShowModal(false);
             setEditingId(null);
+            setEditingOccurrence(null);
           }}
           onSaved={() => {
             onTaskChange();
             setShowModal(false);
             setEditingId(null);
+            setEditingOccurrence(null);
           }}
         />
       )}
@@ -534,11 +540,13 @@ function toLocalDatetime(iso: string): string {
 function TaskModal({
   date,
   taskId,
+  occurrence,
   onClose,
   onSaved,
 }: {
   date: Date;
   taskId: string | null;
+  occurrence?: TaskOccurrence;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -566,6 +574,9 @@ function TaskModal({
   const [teams, setTeams] = useState<{ id: string; name: string; colorHex: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showEditScopeModal, setShowEditScopeModal] = useState(false);
+  const [editScope, setEditScope] = useState<'single' | 'following' | 'all'>('single');
+  const [pendingPayload, setPendingPayload] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -604,24 +615,44 @@ function TaskModal({
   // Service selection no longer auto-fills price
   // Price must be manually entered for each task
 
+  const isRecurringEdit = taskId && occurrence?.rrule;
+
   useEffect(() => {
     if (taskId) {
       tasks.get(taskId).then((task) => {
-        setCustomerName(task.customerName);
-        setCustomerId(task.customerId);
-        setCustomerQuery(task.customerName);
-        setAddress(task.address ?? '');
-        setPhone(task.phone ?? '');
-        setServiceId(task.serviceId ?? '');
-        setServicePriceCents(task.servicePriceCents);
-        setPriceDisplay(task.servicePriceCents !== null ? (task.servicePriceCents / 100).toFixed(2) : '');
-        setDescription(task.description ?? '');
-        setNotes(task.notes ?? '');
-        setStartAt(task.startAt);
-        setEndAt(task.endAt);
-        setAllDay(task.allDay);
-        setAssignedTeamId(task.assignedTeamId ?? '');
-        setCustomerManuallyEdited(task.customerId === null);
+        const base = { customerName: task.customerName, customerId: task.customerId, address: task.address ?? '', phone: task.phone ?? '', serviceId: task.serviceId ?? '', servicePriceCents: task.servicePriceCents, description: task.description ?? '', notes: task.notes ?? '', startAt: task.startAt, endAt: task.endAt, allDay: task.allDay, assignedTeamId: task.assignedTeamId ?? '' };
+        if (occurrence) {
+          setCustomerName(occurrence.customerName);
+          setCustomerId(occurrence.customerId);
+          setCustomerQuery(occurrence.customerName);
+          setAddress(occurrence.address ?? '');
+          setPhone(occurrence.phone ?? '');
+          setServiceId(occurrence.serviceId ?? '');
+          setServicePriceCents(occurrence.servicePriceCents);
+          setPriceDisplay(occurrence.servicePriceCents !== null ? (occurrence.servicePriceCents / 100).toFixed(2) : '');
+          setDescription(occurrence.description ?? '');
+          setNotes(occurrence.notes ?? '');
+          setStartAt(occurrence.occurrenceStart);
+          setEndAt(occurrence.occurrenceEnd);
+          setAllDay(occurrence.allDay);
+          setAssignedTeamId(occurrence.assignedTeamId ?? '');
+        } else {
+          setCustomerName(base.customerName);
+          setCustomerId(base.customerId);
+          setCustomerQuery(base.customerName);
+          setAddress(base.address);
+          setPhone(base.phone);
+          setServiceId(base.serviceId);
+          setServicePriceCents(base.servicePriceCents);
+          setPriceDisplay(base.servicePriceCents !== null ? (base.servicePriceCents / 100).toFixed(2) : '');
+          setDescription(base.description);
+          setNotes(base.notes);
+          setStartAt(base.startAt);
+          setEndAt(base.endAt);
+          setAllDay(base.allDay);
+          setAssignedTeamId(base.assignedTeamId);
+        }
+        setCustomerManuallyEdited((occurrence?.customerId ?? base.customerId) === null);
         if (task.rrule) {
           setRecurrence('weekly');
           const m = task.rrule.match(/INTERVAL=(\d+)/);
@@ -653,7 +684,12 @@ function TaskModal({
       setPhone('');
       setCustomerManuallyEdited(false);
     }
-  }, [taskId, date]);
+  }, [taskId, date, occurrence]);
+
+  async function performUpdate(payload: Record<string, unknown>, scope?: 'single' | 'following' | 'all', occurrenceStart?: string) {
+    if (!taskId) return;
+    await tasks.update(taskId, payload, scope, occurrenceStart);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -688,6 +724,12 @@ function TaskModal({
         ...(rrule !== undefined && { rrule }),
       };
       if (taskId) {
+        if (isRecurringEdit) {
+          setPendingPayload(payload);
+          setShowEditScopeModal(true);
+          setLoading(false);
+          return;
+        }
         await tasks.update(taskId, payload);
       } else {
         console.log('[CREATE TASK] Sending payload:', payload);
@@ -699,7 +741,22 @@ function TaskModal({
       console.error('[CREATE TASK ERROR]', err);
       const errorMessage = err instanceof Error ? err.message : 'Failed to save';
       setError(errorMessage);
-      // Don't call onSaved() on error
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleEditScopeConfirm(scope: 'single' | 'following' | 'all') {
+    if (!pendingPayload || !taskId || !occurrence) return;
+    setLoading(true);
+    setShowEditScopeModal(false);
+    try {
+      await performUpdate(pendingPayload, scope, occurrence.occurrenceStart);
+      setPendingPayload(null);
+      onSaved();
+    } catch (err) {
+      console.error('[EDIT TASK ERROR]', err);
+      setError(err instanceof Error ? err.message : 'Failed to save');
     } finally {
       setLoading(false);
     }
@@ -999,6 +1056,50 @@ function TaskModal({
           </div>
         </form>
       </div>
+      {showEditScopeModal && occurrence && (
+        <>
+          <div className="fixed inset-0 z-[60] bg-black/30" onClick={() => setShowEditScopeModal(false)} aria-hidden />
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <div className="w-full max-w-md rounded-lg bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <div className="border-b border-gray-200 px-6 py-4">
+                <h3 className="text-lg font-semibold text-gray-800">Edit Recurring Task</h3>
+              </div>
+              <div className="px-6 py-4">
+                <p className="mb-4 text-sm text-gray-600">
+                  This task is part of a recurring series. What would you like to edit?
+                </p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-3 rounded border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                    <input type="radio" name="editScope" value="single" checked={editScope === 'single'} onChange={() => setEditScope('single')} className="mt-1" />
+                    <div>
+                      <div className="font-medium text-gray-800">Only this task</div>
+                      <div className="text-xs text-gray-500">Current occurrence only</div>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                    <input type="radio" name="editScope" value="following" checked={editScope === 'following'} onChange={() => setEditScope('following')} className="mt-1" />
+                    <div>
+                      <div className="font-medium text-gray-800">This and following</div>
+                      <div className="text-xs text-gray-500">This occurrence and all future ones</div>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                    <input type="radio" name="editScope" value="all" checked={editScope === 'all'} onChange={() => setEditScope('all')} className="mt-1" />
+                    <div>
+                      <div className="font-medium text-gray-800">All tasks in series</div>
+                      <div className="text-xs text-gray-500">Every occurrence</div>
+                    </div>
+                  </label>
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button type="button" onClick={() => { setShowEditScopeModal(false); setPendingPayload(null); }} className="rounded border border-gray-300 bg-white px-4 py-2 text-sm hover:bg-gray-50">Cancel</button>
+                  <button type="button" onClick={() => handleEditScopeConfirm(editScope)} disabled={loading} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50">Apply</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }

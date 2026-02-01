@@ -1,5 +1,3 @@
-import { appendFileSync } from 'fs';
-import { join } from 'path';
 import {
   Body,
   Controller,
@@ -105,6 +103,15 @@ export class TasksController {
     @Query('scope') scope: 'single' | 'following' | 'all' | undefined,
     @Query('occurrenceStart') occurrenceStart: string | undefined,
   ) {
+    if ((scope === 'single' || scope === 'following') && !occurrenceStart) {
+      throw new BadRequestException('occurrenceStart is required when scope is "single" or "following"');
+    }
+    if (occurrenceStart) {
+      const parsed = new Date(occurrenceStart);
+      if (isNaN(parsed.getTime())) {
+        throw new BadRequestException(`Invalid occurrenceStart: ${occurrenceStart}. Expected ISO-8601 format.`);
+      }
+    }
     return this.tasks.update(id, dto, scope, occurrenceStart);
   }
 
@@ -132,11 +139,7 @@ export class TasksController {
     // Get user ID from CurrentUser decorator (set by JwtAuthGuard)
     const userId = user?.id || 'unknown';
     
-    // #region agent log
-    try { const fs=require('fs'); const base=process.cwd().includes('apps')?join(process.cwd(),'..','..'):process.cwd(); const LOG=join(base,'.cursor','debug.log'); fs.mkdirSync(join(base,'.cursor'),{recursive:true}); fs.appendFileSync(LOG, JSON.stringify({location:'DELETE_entry',data:{taskId:id,scope,occurrenceStart,userId},hypothesisId:'H4'})+'\n'); } catch(_){}
-    // #endregion
     
-    // Enhanced logging for debugging
     this.logger.debug(`[DELETE HANDLER] taskId=${id} scope=${scope} occurrenceStart=${occurrenceStart} userId=${userId}`);
     if (occurrenceStartAt) {
       this.logger.debug(`[DELETE HANDLER] Parsed occurrenceStartAt ISO: ${occurrenceStartAt.toISOString()}`);
