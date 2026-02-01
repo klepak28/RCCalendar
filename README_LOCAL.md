@@ -143,6 +143,22 @@ pnpm dev:web
 
 Do not start web before the API is listening; otherwise you will see ECONNREFUSED when the app calls `/api/*`.
 
+## Recurrence (RRULE)
+
+Tasks store recurrence as an RFC 5545 RRULE string in `task.rrule`. **EXDATE must not be stored in rrule** (the rrule library rejects it); exclusions use TaskOverride (deletedAt) and are applied during expansion.
+
+| Pattern | RRULE example |
+|--------|----------------|
+| Weekly on Mon, Wed | `FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE` |
+| Monthly on day 15 | `FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15` |
+| Monthly last day | `FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=-1` |
+| Monthly 2nd Saturday | `FREQ=MONTHLY;INTERVAL=1;BYDAY=SA;BYSETPOS=2` |
+| Monthly last Saturday | `FREQ=MONTHLY;INTERVAL=1;BYDAY=SA;BYSETPOS=-1` |
+| Yearly Jan 15 | `FREQ=YEARLY;INTERVAL=1;BYMONTH=1;BYMONTHDAY=15` |
+| Yearly 2nd Monday of Jan | `FREQ=YEARLY;INTERVAL=1;BYMONTH=1;BYDAY=MO;BYSETPOS=2` |
+
+Run recurrence unit tests: `pnpm test:recurrence`.
+
 ## Scripts reference
 
 | Command | Description |
@@ -158,6 +174,7 @@ Do not start web before the API is listening; otherwise you will see ECONNREFUSE
 | `pnpm db:seed` | Run seed (api) |
 | `pnpm db:studio` | Open Prisma Studio |
 | `pnpm smoke:api` | Check that API runtime deps load; use if API won’t start |
+| `pnpm test:recurrence` | Run recurrence RRULE expansion tests (api) |
 
 ## Troubleshooting
 

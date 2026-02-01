@@ -28,7 +28,8 @@
     "smoke:api": "pnpm --filter api run smoke",
     "clean:web": "pnpm --filter web run clean",
     "cleanup:rrule-exdate": "pnpm --filter api run cleanup:rrule-exdate",
-    "migrate:rrule-exdate": "pnpm --filter api run migrate:rrule-exdate"
+    "migrate:rrule-exdate": "pnpm --filter api run migrate:rrule-exdate",
+    "test:recurrence": "pnpm --filter api run test:recurrence"
   },
   "engines": {
     "node": ">=20"

@@ -68,6 +68,34 @@ export class TasksService {
   }
 
   /**
+   * Validate rrule before persisting. Rejects EXDATE (must use overrides); ensures rrule parses.
+   * RRULE mappings (RFC 5545, rrule lib):
+   * - Weekly: FREQ=WEEKLY;INTERVAL=x;BYDAY=MO,TU,...
+   * - Monthly day N: FREQ=MONTHLY;INTERVAL=x;BYMONTHDAY=n (n 1-31 or -1 for last day)
+   * - Monthly nth weekday: FREQ=MONTHLY;INTERVAL=x;BYDAY=SA;BYSETPOS=2 (2nd Sat), BYSETPOS=-1 for last
+   * - Yearly date: FREQ=YEARLY;INTERVAL=x;BYMONTH=m;BYMONTHDAY=d
+   * - Yearly nth weekday: FREQ=YEARLY;INTERVAL=x;BYMONTH=m;BYDAY=MO;BYSETPOS=2
+   */
+  private validateRrule(rrule: string | null, dtstart: Date): void {
+    if (!rrule || rrule.trim() === '') return;
+    const r = rrule.trim();
+    if (r.toLowerCase().includes('exdate')) {
+      throw new BadRequestException('EXDATE is not allowed in rrule; use task overrides for exclusions');
+    }
+    const dtstartStr = dtstart
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .replace(/\.\d{3}/, '')
+      .replace('Z', '') + 'Z';
+    try {
+      rrulestr(`DTSTART:${dtstartStr}\nRRULE:${r}`) as RRule;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new BadRequestException(`Invalid rrule: ${msg}`);
+    }
+  }
+
+  /**
    * Sanitize RRULE string by extracting EXDATE values
    * This handles backward compatibility for tasks that have EXDATE embedded in rrule
    * Returns { cleanRrule: string, extractedExdates: Date[] }
@@ -553,6 +581,10 @@ export class TasksService {
       throw new BadRequestException('endAt must be after startAt');
     }
 
+    if (dto.rrule != null && dto.rrule !== '') {
+      this.validateRrule(dto.rrule, startAt);
+    }
+
     // Normalize serviceId
     const normalizedServiceId = this.normalizeString(dto.serviceId);
 
@@ -784,7 +816,13 @@ export class TasksService {
     
     if (dto.allDay !== undefined) updateData.allDay = dto.allDay;
     if (dto.assignedTeamId !== undefined) updateData.assignedTeamId = (dto.assignedTeamId && dto.assignedTeamId.trim()) ? dto.assignedTeamId : null;
-    if (dto.rrule !== undefined) updateData.rrule = dto.rrule;
+    if (dto.rrule !== undefined) {
+      const dtstart = (dto.startAt ? new Date(dto.startAt) : existing.startAt) as Date;
+      if (dto.rrule != null && dto.rrule !== '') {
+        this.validateRrule(dto.rrule, dtstart);
+      }
+      updateData.rrule = dto.rrule;
+    }
 
     return this.prisma.task.update({
       where: { id },

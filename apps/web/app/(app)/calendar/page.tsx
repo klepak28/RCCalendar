@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   format,
@@ -567,6 +567,16 @@ function toLocalDatetime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/**
+ * Local calendar day-of-month (1–31) from startAt; used for monthly-by-day default.
+ * E.g. startAt 2026-02-12 (local) -> 12; startAt 2026-02-09 -> 9.
+ */
+function getLocalDayOfMonth(startAt: string | Date): number {
+  const d = typeof startAt === 'string' ? new Date(startAt) : startAt;
+  const day = d.getDate();
+  return Math.min(31, Math.max(1, day));
+}
+
 function TaskModal({
   date,
   taskId,
@@ -597,9 +607,21 @@ function TaskModal({
   const [endAt, setEndAt] = useState('');
   const [allDay, setAllDay] = useState(false);
   const [assignedTeamId, setAssignedTeamId] = useState('');
-  const [recurrence, setRecurrence] = useState<'once' | 'weekly'>('once');
+  const [recurrence, setRecurrence] = useState<'once' | 'weekly' | 'monthly' | 'yearly'>('once');
   const [weeklyInterval, setWeeklyInterval] = useState(1);
   const [weeklyDays, setWeeklyDays] = useState<number[]>([]);
+  const [monthlyInterval, setMonthlyInterval] = useState(1);
+  const [monthlyPattern, setMonthlyPattern] = useState<'day' | 'lastDay' | 'nthWeekday'>('day');
+  const [monthlyDay, setMonthlyDay] = useState(1);
+  const monthlyDaySyncedFromStartRef = useRef(false);
+  const [monthlyNth, setMonthlyNth] = useState<1 | 2 | 3 | 4 | -1>(1);
+  const [monthlyWeekday, setMonthlyWeekday] = useState(0);
+  const [yearlyInterval, setYearlyInterval] = useState(1);
+  const [yearlyPattern, setYearlyPattern] = useState<'date' | 'nthWeekday'>('date');
+  const [yearlyMonth, setYearlyMonth] = useState(1);
+  const [yearlyDay, setYearlyDay] = useState(15);
+  const [yearlyNth, setYearlyNth] = useState<1 | 2 | 3 | 4 | -1>(1);
+  const [yearlyWeekday, setYearlyWeekday] = useState(0);
   const [services, setServices] = useState<{ id: string; name: string }[]>([]);
   const [teams, setTeams] = useState<{ id: string; name: string; colorHex: string }[]>([]);
   const [loading, setLoading] = useState(false);
@@ -645,7 +667,13 @@ function TaskModal({
   // Service selection no longer auto-fills price
   // Price must be manually entered for each task
 
-  const isRecurringEdit = taskId && occurrence?.rrule;
+  const isRecurringEdit = taskId && occurrence?.rrule && (recurrence === 'weekly' || recurrence === 'monthly' || recurrence === 'yearly');
+
+  useEffect(() => {
+    if (recurrence === 'monthly' && monthlyPattern === 'day' && monthlyDaySyncedFromStartRef.current && startAt) {
+      setMonthlyDay(getLocalDayOfMonth(startAt));
+    }
+  }, [startAt, recurrence, monthlyPattern]);
 
   useEffect(() => {
     if (taskId) {
@@ -684,15 +712,66 @@ function TaskModal({
         }
         setCustomerManuallyEdited((occurrence?.customerId ?? base.customerId) === null);
         if (task.rrule) {
-          setRecurrence('weekly');
-          const m = task.rrule.match(/INTERVAL=(\d+)/);
-          setWeeklyInterval(m ? parseInt(m[1], 10) : 1);
-          const byday = task.rrule.match(/BYDAY=([A-Z,]+)/);
-          if (byday) {
-            const dayMap: Record<string, number> = {
-              SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
-            };
-            setWeeklyDays(byday[1].split(',').map((d) => dayMap[d] ?? 0));
+          const r = task.rrule;
+          if (r.includes('FREQ=WEEKLY')) {
+            setRecurrence('weekly');
+            const m = r.match(/INTERVAL=(\d+)/);
+            setWeeklyInterval(m ? parseInt(m[1], 10) : 1);
+            const byday = r.match(/BYDAY=([A-Z,]+)/);
+            if (byday) {
+              const dayMap: Record<string, number> = {
+                SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
+              };
+              setWeeklyDays(byday[1].split(',').map((d) => dayMap[d] ?? 0));
+            }
+          } else if (r.includes('FREQ=MONTHLY')) {
+            setRecurrence('monthly');
+            const m = r.match(/INTERVAL=(\d+)/);
+            setMonthlyInterval(m ? parseInt(m[1], 10) : 1);
+            const bymonthday = r.match(/BYMONTHDAY=(-?\d+)/);
+            const byday = r.match(/BYDAY=([A-Z]+)/);
+            const bysetpos = r.match(/BYSETPOS=(-?\d+)/);
+            if (bymonthday) {
+              const n = parseInt(bymonthday[1], 10);
+              if (n === -1) {
+                setMonthlyPattern('lastDay');
+              } else {
+                setMonthlyPattern('day');
+                setMonthlyDay(Math.min(31, Math.max(1, n)));
+                monthlyDaySyncedFromStartRef.current = false;
+              }
+            } else if (byday && bysetpos) {
+              setMonthlyPattern('nthWeekday');
+              const dayMap: Record<string, number> = {
+                SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
+              };
+              setMonthlyWeekday(dayMap[byday[1]] ?? 0);
+              const pos = parseInt(bysetpos[1], 10);
+              setMonthlyNth((pos >= 1 && pos <= 4 ? pos : pos === -1 ? -1 : 1) as 1 | 2 | 3 | 4 | -1);
+            }
+          } else if (r.includes('FREQ=YEARLY')) {
+            setRecurrence('yearly');
+            const m = r.match(/INTERVAL=(\d+)/);
+            setYearlyInterval(m ? parseInt(m[1], 10) : 1);
+            const bymonth = r.match(/BYMONTH=(\d+)/);
+            const bymonthday = r.match(/BYMONTHDAY=(\d+)/);
+            const byday = r.match(/BYDAY=([A-Z]+)/);
+            const bysetpos = r.match(/BYSETPOS=(-?\d+)/);
+            if (bymonth) setYearlyMonth(parseInt(bymonth[1], 10));
+            if (bymonthday) setYearlyDay(Math.min(31, Math.max(1, parseInt(bymonthday[1], 10))));
+            if (byday && bysetpos) {
+              setYearlyPattern('nthWeekday');
+              const dayMap: Record<string, number> = {
+                SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
+              };
+              setYearlyWeekday(dayMap[byday[1]] ?? 0);
+              const pos = parseInt(bysetpos[1], 10);
+              setYearlyNth((pos >= 1 && pos <= 4 ? pos : pos === -1 ? -1 : 1) as 1 | 2 | 3 | 4 | -1);
+            } else {
+              setYearlyPattern('date');
+            }
+          } else {
+            setRecurrence('once');
           }
         } else {
           setRecurrence('once');
@@ -713,6 +792,19 @@ function TaskModal({
       setAddress('');
       setPhone('');
       setCustomerManuallyEdited(false);
+      setRecurrence('once');
+      setMonthlyInterval(1);
+      setMonthlyPattern('day');
+      setMonthlyDay(getLocalDayOfMonth(dayStart));
+      monthlyDaySyncedFromStartRef.current = false;
+      setMonthlyNth(1);
+      setMonthlyWeekday(0);
+      setYearlyInterval(1);
+      setYearlyPattern('date');
+      setYearlyMonth(1);
+      setYearlyDay(15);
+      setYearlyNth(1);
+      setYearlyWeekday(0);
     }
   }, [taskId, date, occurrence]);
 
@@ -728,13 +820,27 @@ function TaskModal({
     try {
       const start = new Date(startAt);
       const end = new Date(endAt);
+      const dayMap: Record<number, string> = {
+        0: 'SU', 1: 'MO', 2: 'TU', 3: 'WE', 4: 'TH', 5: 'FR', 6: 'SA',
+      };
       let rrule: string | null | undefined;
       if (recurrence === 'weekly' && weeklyDays.length) {
-        const dayMap: Record<number, string> = {
-          0: 'SU', 1: 'MO', 2: 'TU', 3: 'WE', 4: 'TH', 5: 'FR', 6: 'SA',
-        };
         const byday = weeklyDays.map((d) => dayMap[d]).join(',');
         rrule = `FREQ=WEEKLY;INTERVAL=${weeklyInterval};BYDAY=${byday}`;
+      } else if (recurrence === 'monthly') {
+        if (monthlyPattern === 'day') {
+          rrule = `FREQ=MONTHLY;INTERVAL=${monthlyInterval};BYMONTHDAY=${Math.min(31, Math.max(1, monthlyDay))}`;
+        } else if (monthlyPattern === 'lastDay') {
+          rrule = `FREQ=MONTHLY;INTERVAL=${monthlyInterval};BYMONTHDAY=-1`;
+        } else {
+          rrule = `FREQ=MONTHLY;INTERVAL=${monthlyInterval};BYDAY=${dayMap[monthlyWeekday]};BYSETPOS=${monthlyNth}`;
+        }
+      } else if (recurrence === 'yearly') {
+        if (yearlyPattern === 'date') {
+          rrule = `FREQ=YEARLY;INTERVAL=${yearlyInterval};BYMONTH=${yearlyMonth};BYMONTHDAY=${Math.min(31, Math.max(1, yearlyDay))}`;
+        } else {
+          rrule = `FREQ=YEARLY;INTERVAL=${yearlyInterval};BYMONTH=${yearlyMonth};BYDAY=${dayMap[yearlyWeekday]};BYSETPOS=${yearlyNth}`;
+        }
       } else if (taskId) {
         rrule = null;
       }
@@ -1021,24 +1127,31 @@ function TaskModal({
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">Recurrence</label>
-            <div className="flex gap-4">
+            <div className="flex flex-wrap gap-4">
               <label className="flex items-center gap-1">
-                <input
-                  type="radio"
-                  name="recurrence"
-                  checked={recurrence === 'once'}
-                  onChange={() => setRecurrence('once')}
-                />
-                One-time
+                <input type="radio" name="recurrence" checked={recurrence === 'once'} onChange={() => setRecurrence('once')} />
+                None
+              </label>
+              <label className="flex items-center gap-1">
+                <input type="radio" name="recurrence" checked={recurrence === 'weekly'} onChange={() => setRecurrence('weekly')} />
+                Weekly
               </label>
               <label className="flex items-center gap-1">
                 <input
                   type="radio"
                   name="recurrence"
-                  checked={recurrence === 'weekly'}
-                  onChange={() => setRecurrence('weekly')}
+                  checked={recurrence === 'monthly'}
+                  onChange={() => {
+                    setRecurrence('monthly');
+                    setMonthlyDay(getLocalDayOfMonth(startAt));
+                    monthlyDaySyncedFromStartRef.current = true;
+                  }}
                 />
-                Weekly
+                Monthly
+              </label>
+              <label className="flex items-center gap-1">
+                <input type="radio" name="recurrence" checked={recurrence === 'yearly'} onChange={() => setRecurrence('yearly')} />
+                Yearly
               </label>
             </div>
             {recurrence === 'weekly' && (
@@ -1066,6 +1179,141 @@ function TaskModal({
                     {label}
                   </label>
                 ))}
+              </div>
+            )}
+            {recurrence === 'monthly' && (
+              <div className="mt-2 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">Every</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={monthlyInterval}
+                    onChange={(e) => setMonthlyInterval(parseInt(e.target.value, 10) || 1)}
+                    className="w-14 rounded border border-gray-300 px-2 py-1 text-sm"
+                  />
+                  <span className="text-sm">month(s)</span>
+                </div>
+                <div className="space-y-2 pl-2">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="monthlyPattern" checked={monthlyPattern === 'day'} onChange={() => setMonthlyPattern('day')} />
+                    <span className="text-sm">On day</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={monthlyDay}
+                      onChange={(e) => {
+                        monthlyDaySyncedFromStartRef.current = false;
+                        setMonthlyDay(Math.min(31, Math.max(1, parseInt(e.target.value, 10) || 1)));
+                      }}
+                      className="w-14 rounded border border-gray-300 px-2 py-1 text-sm"
+                    />
+                    {monthlyDay >= 30 && (
+                      <span className="text-xs text-gray-500">Months without this day are skipped</span>
+                    )}
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="monthlyPattern" checked={monthlyPattern === 'lastDay'} onChange={() => setMonthlyPattern('lastDay')} />
+                    <span className="text-sm">On the last day of the month</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="monthlyPattern" checked={monthlyPattern === 'nthWeekday'} onChange={() => setMonthlyPattern('nthWeekday')} />
+                    <span className="text-sm">On the</span>
+                    <select
+                      value={monthlyNth}
+                      onChange={(e) => setMonthlyNth(parseInt(e.target.value, 10) as 1 | 2 | 3 | 4 | -1)}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    >
+                      <option value={1}>1st</option>
+                      <option value={2}>2nd</option>
+                      <option value={3}>3rd</option>
+                      <option value={4}>4th</option>
+                      <option value={-1}>last</option>
+                    </select>
+                    <select
+                      value={monthlyWeekday}
+                      onChange={(e) => setMonthlyWeekday(parseInt(e.target.value, 10))}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    >
+                      {WEEKDAY_OPTIONS.map(({ value, label }) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            )}
+            {recurrence === 'yearly' && (
+              <div className="mt-2 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">Every</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={yearlyInterval}
+                    onChange={(e) => setYearlyInterval(parseInt(e.target.value, 10) || 1)}
+                    className="w-14 rounded border border-gray-300 px-2 py-1 text-sm"
+                  />
+                  <span className="text-sm">year(s)</span>
+                </div>
+                <div className="space-y-2 pl-2">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="yearlyPattern" checked={yearlyPattern === 'date'} onChange={() => setYearlyPattern('date')} />
+                    <span className="text-sm">On</span>
+                    <select
+                      value={yearlyMonth}
+                      onChange={(e) => setYearlyMonth(parseInt(e.target.value, 10))}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    >
+                      {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m, i) => (
+                        <option key={m} value={i + 1}>{m}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={yearlyDay}
+                      onChange={(e) => setYearlyDay(Math.min(31, Math.max(1, parseInt(e.target.value, 10) || 1)))}
+                      className="w-14 rounded border border-gray-300 px-2 py-1 text-sm"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="yearlyPattern" checked={yearlyPattern === 'nthWeekday'} onChange={() => setYearlyPattern('nthWeekday')} />
+                    <span className="text-sm">On the</span>
+                    <select
+                      value={yearlyNth}
+                      onChange={(e) => setYearlyNth(parseInt(e.target.value, 10) as 1 | 2 | 3 | 4 | -1)}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    >
+                      <option value={1}>1st</option>
+                      <option value={2}>2nd</option>
+                      <option value={3}>3rd</option>
+                      <option value={4}>4th</option>
+                      <option value={-1}>last</option>
+                    </select>
+                    <select
+                      value={yearlyWeekday}
+                      onChange={(e) => setYearlyWeekday(parseInt(e.target.value, 10))}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    >
+                      {WEEKDAY_OPTIONS.map(({ value, label }) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                    <span className="text-sm">of</span>
+                    <select
+                      value={yearlyMonth}
+                      onChange={(e) => setYearlyMonth(parseInt(e.target.value, 10))}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    >
+                      {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m, i) => (
+                        <option key={m} value={i + 1}>{m}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               </div>
             )}
           </div>
