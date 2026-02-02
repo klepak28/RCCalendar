@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { teams } from '@/lib/api';
+import { teams, sortTeamsNaturally } from '@/lib/api';
 import type { Team } from '@/lib/api';
 
 export default function SettingsTeamsPage() {
@@ -18,7 +18,7 @@ export default function SettingsTeamsPage() {
   }, []);
 
   function loadTeams() {
-    teams.list().then(setList).catch(() => setList([]));
+    teams.list().then((t) => setList(sortTeamsNaturally(t))).catch(() => setList([]));
   }
 
   function openCreate() {

@@ -17,139 +17,67 @@ import {
   isToday,
   parseISO,
 } from 'date-fns';
-import { tasks, type TaskOccurrence } from '@/lib/api';
+import { tasks, sortTeamsNaturally, type TaskOccurrence } from '@/lib/api';
+import {
+  type CalendarSettings,
+  DEFAULT_CALENDAR_SETTINGS,
+  getEventDisplayLines,
+} from '@/lib/calendar-settings';
 import DayView, { type CreatePrefill } from './components/DayView';
 
 const OPEN_FOR_OCCURRENCE_KEY = 'calendar:openForOccurrence';
+const CALENDAR_SETTINGS_KEY = 'rccalendar.calendarSettings';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MAX_PILLS = 3;
-const MAX_EVENT_LINES = 4;
-const CALENDAR_PREFS_KEY = 'calendar:eventDisplayPrefs:v1';
 
-export type EventDisplayFieldKey = 'customerName' | 'time' | 'price' | 'serviceType';
-
-export type EventDisplayFieldPref = {
-  key: EventDisplayFieldKey;
-  label: string;
-  enabled: boolean;
-  locked?: boolean;
-};
-
-const DEFAULT_EVENT_DISPLAY_PREFS: EventDisplayFieldPref[] = [
-  { key: 'customerName', label: 'Customer Name', enabled: true, locked: true },
-  { key: 'time', label: 'Time', enabled: true, locked: false },
-  { key: 'price', label: 'Price', enabled: false, locked: false },
-  { key: 'serviceType', label: 'Service Type', enabled: false, locked: false },
-];
-
-function loadEventDisplayPrefs(): EventDisplayFieldPref[] {
-  if (typeof window === 'undefined') return [...DEFAULT_EVENT_DISPLAY_PREFS];
+function loadCalendarSettings(): CalendarSettings {
+  if (typeof window === 'undefined') return { ...DEFAULT_CALENDAR_SETTINGS };
   try {
-    const raw = localStorage.getItem(CALENDAR_PREFS_KEY);
-    if (!raw) return [...DEFAULT_EVENT_DISPLAY_PREFS];
-    const parsed = JSON.parse(raw) as EventDisplayFieldPref[];
-    if (!Array.isArray(parsed) || parsed.length === 0) return [...DEFAULT_EVENT_DISPLAY_PREFS];
-    const defaultByKey = new Map(DEFAULT_EVENT_DISPLAY_PREFS.map((p) => [p.key, p]));
-    const result: EventDisplayFieldPref[] = [];
-    const seen = new Set<EventDisplayFieldKey>();
-    for (const p of parsed) {
-      if (p && typeof p.key === 'string' && defaultByKey.has(p.key as EventDisplayFieldKey) && !seen.has(p.key as EventDisplayFieldKey)) {
-        seen.add(p.key as EventDisplayFieldKey);
-        const def = defaultByKey.get(p.key as EventDisplayFieldKey)!;
-        result.push({ ...def, enabled: def.locked ? true : !!p.enabled });
-      }
-    }
-    for (const def of DEFAULT_EVENT_DISPLAY_PREFS) {
-      if (!seen.has(def.key)) result.push({ ...def });
-    }
-    return result.length ? result : [...DEFAULT_EVENT_DISPLAY_PREFS];
+    const raw = localStorage.getItem(CALENDAR_SETTINGS_KEY);
+    if (!raw) return { ...DEFAULT_CALENDAR_SETTINGS };
+    const parsed = JSON.parse(raw) as Partial<CalendarSettings>;
+    if (!parsed || typeof parsed !== 'object') return { ...DEFAULT_CALENDAR_SETTINGS };
+    return {
+      showTime: typeof parsed.showTime === 'boolean' ? parsed.showTime : DEFAULT_CALENDAR_SETTINGS.showTime,
+      showPrice: typeof parsed.showPrice === 'boolean' ? parsed.showPrice : DEFAULT_CALENDAR_SETTINGS.showPrice,
+      showService: typeof parsed.showService === 'boolean' ? parsed.showService : DEFAULT_CALENDAR_SETTINGS.showService,
+      showDescription: typeof parsed.showDescription === 'boolean' ? parsed.showDescription : DEFAULT_CALENDAR_SETTINGS.showDescription,
+      showNotes: typeof parsed.showNotes === 'boolean' ? parsed.showNotes : DEFAULT_CALENDAR_SETTINGS.showNotes,
+    };
   } catch {
-    return [...DEFAULT_EVENT_DISPLAY_PREFS];
+    return { ...DEFAULT_CALENDAR_SETTINGS };
   }
 }
 
-function saveEventDisplayPrefs(prefs: EventDisplayFieldPref[]) {
+function saveCalendarSettings(s: CalendarSettings) {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(CALENDAR_PREFS_KEY, JSON.stringify(prefs));
+    localStorage.setItem(CALENDAR_SETTINGS_KEY, JSON.stringify(s));
   } catch {
     // ignore
   }
 }
 
-function getEventDisplayLines(
-  o: TaskOccurrence,
-  prefs: EventDisplayFieldPref[],
-): string[] {
-  const start = parseISO(o.occurrenceStart);
-  const end = parseISO(o.occurrenceEnd);
-  const lines: string[] = [];
-  for (const p of prefs) {
-    if (!p.enabled) continue;
-    let text: string | null = null;
-    switch (p.key) {
-      case 'customerName':
-        text = o.customerName || null;
-        break;
-      case 'time': {
-        const startStr = format(start, 'h:mm a');
-        if (end.getTime() > start.getTime()) {
-          text = `${startStr} – ${format(end, 'h:mm a')}`;
-        } else {
-          text = startStr;
-        }
-        break;
-      }
-      case 'price':
-        text = o.servicePriceCents != null ? `$${(o.servicePriceCents / 100).toFixed(2)}` : null;
-        break;
-      case 'serviceType':
-        text = o.service?.name ?? null;
-        break;
-      default:
-        break;
-    }
-    if (text != null && text !== '') {
-      lines.push(text);
-    }
-  }
-  return lines.slice(0, MAX_EVENT_LINES);
-}
-
 function CalendarSettingsModal({
-  prefs,
+  settings,
   onSave,
   onReset,
   onClose,
 }: {
-  prefs: EventDisplayFieldPref[];
-  onSave: (prefs: EventDisplayFieldPref[]) => void;
+  settings: CalendarSettings;
+  onSave: (s: CalendarSettings) => void;
   onReset: () => void;
   onClose: () => void;
 }) {
-  const [localPrefs, setLocalPrefs] = useState<EventDisplayFieldPref[]>(() => [...prefs]);
+  const [local, setLocal] = useState<CalendarSettings>(() => ({ ...settings }));
 
   useEffect(() => {
-    setLocalPrefs([...prefs]);
-  }, [prefs]);
+    setLocal({ ...settings });
+  }, [settings]);
 
-  const move = (index: number, dir: -1 | 1) => {
-    const next = index + dir;
-    if (next < 0 || next >= localPrefs.length) return;
-    const copy = [...localPrefs];
-    const a = copy[index];
-    copy[index] = copy[next];
-    copy[next] = a;
-    setLocalPrefs(copy);
-  };
-
-  const setEnabled = (index: number, enabled: boolean) => {
-    const copy = [...localPrefs];
-    if (copy[index].locked) return;
-    copy[index] = { ...copy[index], enabled };
-    setLocalPrefs(copy);
-  };
+  const set = (k: keyof CalendarSettings, v: boolean) =>
+    setLocal((prev) => ({ ...prev, [k]: v }));
 
   return (
     <>
@@ -164,52 +92,69 @@ function CalendarSettingsModal({
           </div>
           <div className="px-6 py-4">
             <p className="mb-3 text-sm text-gray-600">
-              Choose which fields to show in each event block and their order.
+              Choose which fields to show in event blocks (name is always shown).
             </p>
             <ul className="space-y-2">
-              {localPrefs.map((p, i) => (
-                <li
-                  key={p.key}
-                  className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2"
-                >
-                  <input
-                    type="checkbox"
-                    id={`pref-${p.key}`}
-                    checked={p.enabled}
-                    disabled={!!p.locked}
-                    onChange={(e) => setEnabled(i, e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300"
-                  />
-                  <label htmlFor={`pref-${p.key}`} className="flex-1 text-sm font-medium text-gray-800">
-                    {p.label}
-                    {p.locked && <span className="ml-1 text-xs text-gray-500">(always on)</span>}
-                  </label>
-                  <div className="flex gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => move(i, -1)}
-                      disabled={i === 0}
-                      className="rounded p-1.5 text-gray-600 hover:bg-gray-200 disabled:opacity-40"
-                      aria-label="Move up"
-                    >
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => move(i, 1)}
-                      disabled={i === localPrefs.length - 1}
-                      className="rounded p-1.5 text-gray-600 hover:bg-gray-200 disabled:opacity-40"
-                      aria-label="Move down"
-                    >
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                      </svg>
-                    </button>
-                  </div>
-                </li>
-              ))}
+              <li className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  id="showTime"
+                  checked={local.showTime}
+                  onChange={(e) => set('showTime', e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="showTime" className="flex-1 text-sm font-medium text-gray-800">
+                  Time (e.g. 9:00 AM – 12:00 PM)
+                </label>
+              </li>
+              <li className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  id="showPrice"
+                  checked={local.showPrice}
+                  onChange={(e) => set('showPrice', e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="showPrice" className="flex-1 text-sm font-medium text-gray-800">
+                  Price
+                </label>
+              </li>
+              <li className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  id="showService"
+                  checked={local.showService}
+                  onChange={(e) => set('showService', e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="showService" className="flex-1 text-sm font-medium text-gray-800">
+                  Service
+                </label>
+              </li>
+              <li className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  id="showDescription"
+                  checked={local.showDescription}
+                  onChange={(e) => set('showDescription', e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="showDescription" className="flex-1 text-sm font-medium text-gray-800">
+                  Description
+                </label>
+              </li>
+              <li className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  id="showNotes"
+                  checked={local.showNotes}
+                  onChange={(e) => set('showNotes', e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="showNotes" className="flex-1 text-sm font-medium text-gray-800">
+                  Notes
+                </label>
+              </li>
             </ul>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -221,7 +166,7 @@ function CalendarSettingsModal({
               </button>
               <button
                 type="button"
-                onClick={() => onSave(localPrefs)}
+                onClick={() => onSave(local)}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               >
                 Save
@@ -260,8 +205,8 @@ export default function CalendarPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const [eventDisplayPrefs, setEventDisplayPrefs] = useState<EventDisplayFieldPref[]>(() =>
-    typeof window !== 'undefined' ? loadEventDisplayPrefs() : [...DEFAULT_EVENT_DISPLAY_PREFS],
+  const [calendarSettings, setCalendarSettings] = useState<CalendarSettings>(() =>
+    typeof window !== 'undefined' ? loadCalendarSettings() : { ...DEFAULT_CALENDAR_SETTINGS },
   );
   const [calendarSettingsOpen, setCalendarSettingsOpen] = useState(false);
   const [openForOccurrence, setOpenForOccurrence] = useState<TaskOccurrence | null>(null);
@@ -270,6 +215,7 @@ export default function CalendarPage() {
     viewParam === 'day' ? 'day' : 'month',
   );
   const [createPrefill, setCreatePrefill] = useState<CreatePrefill | null>(null);
+  const [dayViewRefreshKey, setDayViewRefreshKey] = useState(0);
 
   const openTaskIdParam = searchParams.get('openTaskId') ?? '';
   const occurrenceStartParam = searchParams.get('occurrenceStart') ?? '';
@@ -358,7 +304,7 @@ export default function CalendarPage() {
   }, [loadTasks]);
 
   useEffect(() => {
-    setEventDisplayPrefs(loadEventDisplayPrefs());
+    setCalendarSettings(loadCalendarSettings());
   }, []);
 
   useEffect(() => {
@@ -518,15 +464,16 @@ export default function CalendarPage() {
       </div>
       {calendarSettingsOpen && (
         <CalendarSettingsModal
-          prefs={eventDisplayPrefs}
-          onSave={(prefs) => {
-            setEventDisplayPrefs(prefs);
-            saveEventDisplayPrefs(prefs);
+          settings={calendarSettings}
+          onSave={(s) => {
+            setCalendarSettings(s);
+            saveCalendarSettings(s);
             setCalendarSettingsOpen(false);
           }}
           onReset={() => {
-            setEventDisplayPrefs([...DEFAULT_EVENT_DISPLAY_PREFS]);
-            saveEventDisplayPrefs(DEFAULT_EVENT_DISPLAY_PREFS);
+            const def = { ...DEFAULT_CALENDAR_SETTINGS };
+            setCalendarSettings(def);
+            saveCalendarSettings(def);
           }}
           onClose={() => setCalendarSettingsOpen(false)}
         />
@@ -535,6 +482,8 @@ export default function CalendarPage() {
       {calendarView === 'day' ? (
         <DayView
           viewDate={viewDate}
+          calendarSettings={calendarSettings}
+          refreshKey={dayViewRefreshKey}
           onPrev={() => setViewDate((d) => subDays(d, 1))}
           onNext={() => setViewDate((d) => addDays(d, 1))}
           onTaskClick={(occ) => {
@@ -589,7 +538,7 @@ export default function CalendarPage() {
                     </div>
                     <div className="space-y-1">
                       {visible.map((o) => {
-                        const lines = getEventDisplayLines(o, eventDisplayPrefs);
+                        const lines = getEventDisplayLines(o, calendarSettings);
                         const title = lines.join('\n');
                         return (
                           <div
@@ -635,7 +584,10 @@ export default function CalendarPage() {
             setDrawerOpen(false);
             setCreatePrefill(null);
           }}
-          onTaskChange={loadTasks}
+          onTaskChange={() => {
+            loadTasks();
+            if (calendarView === 'day') setDayViewRefreshKey((k) => k + 1);
+          }}
           openForOccurrence={openForOccurrence}
           onClearOpenForOccurrence={() => setOpenForOccurrence(null)}
           createPrefill={createPrefill}
@@ -1085,7 +1037,7 @@ function TaskModal({
         import('@/lib/api').then((m) => m.teams.list()),
       ]);
       setServices(s);
-      setTeams(t);
+      setTeams(sortTeamsNaturally(t));
     };
     load();
   }, []);

@@ -2,7 +2,9 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, parseISO, isToday } from 'date-fns';
-import { tasks, teams, type TaskOccurrence, type Team } from '@/lib/api';
+import { tasks, teams, sortTeamsNaturally, type TaskOccurrence, type Team } from '@/lib/api';
+import { getEventDisplayLines } from '@/lib/calendar-settings';
+import type { CalendarSettings } from '@/lib/calendar-settings';
 
 const HOUR_START = 6;
 const HOUR_END = 22;
@@ -39,12 +41,16 @@ export type CreatePrefill = {
 
 export default function DayView({
   viewDate,
+  calendarSettings,
+  refreshKey = 0,
   onPrev,
   onNext,
   onTaskClick,
   onEmptySlotClick,
 }: {
   viewDate: Date;
+  calendarSettings: CalendarSettings;
+  refreshKey?: number;
   onPrev: () => void;
   onNext: () => void;
   onTaskClick: (occurrence: TaskOccurrence) => void;
@@ -77,7 +83,7 @@ export default function DayView({
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData, refreshKey]);
 
   useEffect(() => {
     if (!isToday(viewDate)) return;
@@ -86,7 +92,8 @@ export default function DayView({
   }, [viewDate]);
 
   const columns = useMemo(() => {
-    const cols: { id: string | null; name: string }[] = teamsList.map((t) => ({ id: t.id, name: t.name }));
+    const sorted = sortTeamsNaturally(teamsList);
+    const cols: { id: string | null; name: string }[] = sorted.map((t) => ({ id: t.id, name: t.name }));
     cols.push({ id: null, name: 'Unassigned' });
     return cols;
   }, [teamsList]);
@@ -104,8 +111,16 @@ export default function DayView({
 
   const handleSlotClick = useCallback(
     (hour: number, minute: number, teamId: string | null) => {
-      const start = new Date(viewDate);
-      start.setHours(hour, minute, 0, 0);
+      // Build local wall-time date (avoids UTC/date-string parsing issues)
+      const start = new Date(
+        viewDate.getFullYear(),
+        viewDate.getMonth(),
+        viewDate.getDate(),
+        hour,
+        minute,
+        0,
+        0,
+      );
       const end = new Date(start);
       end.setMinutes(end.getMinutes() + 30);
       onEmptySlotClick({
@@ -197,7 +212,20 @@ export default function DayView({
       >
         <div className="col-span-1" />
         {columns.map((col) => (
-          <div key={`ev-${col.id ?? 'u'}`} className="pointer-events-auto relative col-span-1">
+          <div
+            key={`ev-${col.id ?? 'u'}`}
+            className="pointer-events-auto relative col-span-1"
+            onClick={(e) => {
+              if ((e.target as HTMLElement).closest('[data-event-block]')) return;
+              const rect = e.currentTarget.getBoundingClientRect();
+              const yOffset = e.clientY - rect.top;
+              const minutesFromStart = gridStartMinutes + yOffset / PX_PER_MINUTE;
+              const rounded = Math.round(minutesFromStart / 30) * 30;
+              const hour = HOUR_START + Math.floor(rounded / 60);
+              const minute = rounded % 60;
+              handleSlotClick(hour, minute, col.id);
+            }}
+          >
             {occurrencesForDay
               .filter((o) => (o.assignedTeamId ?? null) === col.id)
               .map((o) => {
@@ -206,10 +234,7 @@ export default function DayView({
                 const top = (minutesFromMidnight(start) - gridStartMinutes) * PX_PER_MINUTE;
                 const h = Math.max(20, durationMinutes(start, end) * PX_PER_MINUTE);
                 const color = o.assignedTeam?.colorHex ?? '#6b7280';
-                const timeStr = `${format(start, 'h:mm a')} – ${format(end, 'h:mm a')}`;
-                const addr = (o.address ?? '').trim();
-                const price =
-                  o.servicePriceCents != null ? `$${(o.servicePriceCents / 100).toFixed(2)}` : '';
+                const lines = getEventDisplayLines(o, calendarSettings);
 
                 return (
                   <div
@@ -221,19 +246,17 @@ export default function DayView({
                       minHeight: 20,
                       backgroundColor: color,
                     }}
+                    data-event-block
                     onClick={(e) => {
                       e.stopPropagation();
                       onTaskClick(o);
                     }}
                   >
-                    <div className="truncate text-xs font-medium">{o.customerName ?? '—'}</div>
-                    <div className="truncate text-[10px] opacity-95">{timeStr}</div>
-                    {addr && (
-                      <div className="truncate text-[10px] opacity-90" title={addr}>
-                        {addr}
+                    {lines.map((line, i) => (
+                      <div key={i} className="truncate text-[10px] leading-tight">
+                        {line}
                       </div>
-                    )}
-                    {price && <div className="text-[10px] opacity-95">{price}</div>}
+                    ))}
                   </div>
                 );
               })}

@@ -52,6 +52,20 @@ export async function api<T>(
 export type User = { id: string; username: string; timezone: string };
 export type Service = { id: string; name: string };
 export type Team = { id: string; name: string; colorHex: string };
+
+/** Sort teams by numeric suffix ascending (Team1, Team2, Team10...). No number = after numbered, by name. */
+export function sortTeamsNaturally<T extends { name: string }>(teams: T[]): T[] {
+  return [...teams].sort((a, b) => {
+    const numA = parseInt(a.name.replace(/^\D+/, ''), 10);
+    const numB = parseInt(b.name.replace(/^\D+/, ''), 10);
+    const hasNumA = !isNaN(numA) && a.name.match(/\d/);
+    const hasNumB = !isNaN(numB) && b.name.match(/\d/);
+    if (hasNumA && hasNumB) return numA - numB;
+    if (hasNumA && !hasNumB) return -1;
+    if (!hasNumA && hasNumB) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
 export type Customer = { id: string; fullName: string; address: string; phone: string };
 export type TaskOccurrence = {
   taskId: string;
