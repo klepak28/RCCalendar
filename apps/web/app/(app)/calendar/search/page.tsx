@@ -65,7 +65,9 @@ function formatSearchTimeRange(o: TaskOccurrence): string {
 export default function CalendarSearchPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const customerId = (searchParams.get('customerId') ?? '').trim();
   const q = (searchParams.get('q') ?? '').trim();
+  const searchByCustomerId = customerId.length > 0;
 
   const [timeRange, setTimeRange] = useState<TimeRangeKey>('365');
   const [items, setItems] = useState<TaskOccurrence[]>([]);
@@ -91,13 +93,13 @@ export default function CalendarSearchPage() {
 
   const fetchPage = useCallback(
     (cursor: string | null, append: boolean) => {
-      if (!q) {
+      if (!searchByCustomerId && !q) {
         setItems([]);
         setNextCursor(null);
         setLoading(false);
         return;
       }
-      const requestKey = `${q}|${fromIso}|${toIso}|${cursor ?? ''}`;
+      const requestKey = `${customerId}|${q}|${fromIso}|${toIso}|${cursor ?? ''}`;
       if (!append) {
         scrollDoneRef.current = false;
         const now = Date.now();
@@ -115,7 +117,9 @@ export default function CalendarSearchPage() {
       const controller = append ? setLoadingMore : setLoading;
       controller(true);
       setError(null);
-      calendarSearch(q, {
+      calendarSearch({
+        customerId: searchByCustomerId ? customerId : undefined,
+        query: q || undefined,
         from: fromIso,
         to: toIso,
         limit: PAGE_SIZE,
@@ -141,18 +145,18 @@ export default function CalendarSearchPage() {
           if (!append) abortRef.current = null;
         });
     },
-    [q, fromIso, toIso],
+    [searchByCustomerId, customerId, q, fromIso, toIso],
   );
 
   useEffect(() => {
-    if (!q) {
+    if (!searchByCustomerId && !q) {
       setLoading(false);
       setItems([]);
       setNextCursor(null);
       return;
     }
     fetchPage(null, false);
-  }, [q, fromIso, toIso, fetchPage]);
+  }, [searchByCustomerId, customerId, q, fromIso, toIso, fetchPage]);
 
   const todayStartLocal = useMemo(() => {
     const d = new Date(nowRef.current!);
@@ -201,7 +205,7 @@ export default function CalendarSearchPage() {
     );
   };
 
-  if (!q) {
+  if (!searchByCustomerId && !q) {
     return (
       <div className="min-h-screen p-6 sm:p-8">
         <div className="mb-6 flex items-center gap-4">
@@ -212,7 +216,7 @@ export default function CalendarSearchPage() {
             ← Back to calendar
           </Link>
         </div>
-        <p className="text-gray-600">Enter a search query in the URL (e.g. /calendar/search?q=Linda).</p>
+        <p className="text-gray-600">Search from the calendar bar or use /calendar/search?q=Linda or ?customerId=...</p>
       </div>
     );
   }
@@ -228,7 +232,7 @@ export default function CalendarSearchPage() {
             ← Back to calendar
           </Link>
           <h1 className="text-xl font-semibold text-gray-800">
-            Search results for &quot;{q}&quot;
+            {searchByCustomerId ? 'Customer visits' : `Search results for "${q}"`}
           </h1>
         </div>
         <div className="flex items-center gap-2">

@@ -2,9 +2,10 @@
 
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { auth } from '@/lib/api';
 import type { User } from '@/lib/api';
+import HeaderSearchBox from './components/HeaderSearchBox';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -47,7 +48,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white px-4 py-2 shadow-sm">
+      <header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-white px-4 py-2 shadow-sm sm:gap-4">
         <div className="flex items-center gap-4">
           <Link href="/calendar" className="text-lg font-semibold text-gray-800">
             Raccoon Cleaning
@@ -73,6 +74,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </Link>
           </nav>
         </div>
+        <Suspense fallback={<div className="h-8 min-w-[220px] max-w-[320px] rounded-md border border-gray-200 bg-gray-50" />}>
+          <HeaderSearchBox />
+        </Suspense>
         <div className="flex items-center gap-2 text-sm text-gray-600">
           <span>{user?.username ?? '—'}</span>
           <button

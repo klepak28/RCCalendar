@@ -1,7 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { rrulestr, RRuleSet, RRule } from 'rrule';
 import { addMilliseconds, differenceInMilliseconds } from 'date-fns';
 import { PrismaService } from '../prisma/prisma.service';
+
+const SYNTHETIC_PREFIX = 'syn_';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 
@@ -61,6 +64,20 @@ export class TasksService {
     if (value === null || value === undefined) return null;
     const trimmed = value.trim();
     return trimmed === '' ? null : trimmed;
+  }
+
+  /** Must match SearchSuggestService deterministicId */
+  private syntheticCustomerId(
+    name: string,
+    phone: string | null,
+    address: string | null,
+  ): string {
+    const n = (name ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const p = (phone ?? '').replace(/\D/g, '');
+    const a = (address ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const key = `${n}|${p}|${a}`;
+    const hash = createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
+    return `${SYNTHETIC_PREFIX}${hash}`;
   }
 
   private getDurationMs(task: { startAt: Date; endAt: Date }): number {
@@ -560,20 +577,16 @@ export class TasksService {
 
   /**
    * Search tasks by customer name, phone (digits), or address.
+   * When customerId is provided, filters strictly by it (customerId wins over query).
    * Returns expanded occurrences in [from, to], sorted newest first, with pagination.
    */
   async search(
-    query: string,
     from: Date,
     to: Date,
     limit: number = 50,
     offset: number = 0,
+    filters?: { query?: string; customerId?: string },
   ): Promise<{ items: TaskOccurrence[]; nextCursor: string | null }> {
-    const q = query?.trim() ?? '';
-    if (q.length === 0) {
-      return { items: [], nextCursor: null };
-    }
-
     if (!(from instanceof Date) || isNaN(from.getTime())) {
       throw new BadRequestException('Invalid "from" date');
     }
@@ -584,9 +597,6 @@ export class TasksService {
       throw new BadRequestException('"from" date must be before "to" date');
     }
 
-    const qLower = q.toLowerCase();
-    const phoneDigits = q.replace(/\D/g, '');
-
     const dateCondition = {
       deletedAt: null,
       OR: [
@@ -596,33 +606,70 @@ export class TasksService {
     };
 
     const taskIds = new Set<string>();
+    const customerId = (filters?.customerId ?? '').trim();
+    const q = (filters?.query ?? '').trim();
+    const qLower = q.toLowerCase();
+    const phoneDigits = q.replace(/\D/g, '');
 
-    const nameAddressMatch = {
-      OR: [
-        { customerName: { contains: q, mode: 'insensitive' as const } },
-        { address: { contains: q, mode: 'insensitive' as const } },
-      ],
-    };
-    const byNameAddress = await this.prisma.task.findMany({
-      where: { ...dateCondition, ...nameAddressMatch },
-      select: { id: true },
-    });
-    byNameAddress.forEach((t) => taskIds.add(t.id));
-
-    if (phoneDigits.length > 0) {
-      const allInRange = await this.prisma.task.findMany({
-        where: dateCondition,
-        select: { id: true, phone: true },
+    if (customerId.length > 0) {
+      // customerId wins: filter strictly by it
+      const isSynthetic = customerId.startsWith('syn_');
+      if (isSynthetic) {
+        const allInRange = await this.prisma.task.findMany({
+          where: {
+            ...dateCondition,
+            customerId: null,
+          },
+          select: { id: true, customerName: true, phone: true, address: true },
+        });
+        for (const t of allInRange) {
+          const synId = this.syntheticCustomerId(
+            t.customerName ?? '',
+            t.phone ?? null,
+            t.address ?? null,
+          );
+          if (synId === customerId) taskIds.add(t.id);
+        }
+      } else {
+        const byCustomer = await this.prisma.task.findMany({
+          where: { ...dateCondition, customerId },
+          select: { id: true },
+        });
+        byCustomer.forEach((t: { id: string }) => taskIds.add(t.id));
+      }
+      if (taskIds.size === 0) {
+        return { items: [], nextCursor: null };
+      }
+    } else if (q.length > 0) {
+      const nameAddressMatch = {
+        OR: [
+          { customerName: { contains: q, mode: 'insensitive' as const } },
+          { address: { contains: q, mode: 'insensitive' as const } },
+        ],
+      };
+      const byNameAddress = await this.prisma.task.findMany({
+        where: { ...dateCondition, ...nameAddressMatch },
+        select: { id: true },
       });
-      for (const t of allInRange) {
-        const tDigits = (t.phone ?? '').replace(/\D/g, '');
-        if (tDigits.includes(phoneDigits) || tDigits === phoneDigits) {
-          taskIds.add(t.id);
+      byNameAddress.forEach((t: { id: string }) => taskIds.add(t.id));
+
+      if (phoneDigits.length > 0) {
+        const allInRange = await this.prisma.task.findMany({
+          where: dateCondition,
+          select: { id: true, phone: true },
+        });
+        for (const t of allInRange) {
+          const tDigits = (t.phone ?? '').replace(/\D/g, '');
+          if (tDigits.includes(phoneDigits) || tDigits === phoneDigits) {
+            taskIds.add(t.id);
+          }
         }
       }
-    }
 
-    if (taskIds.size === 0) {
+      if (taskIds.size === 0) {
+        return { items: [], nextCursor: null };
+      }
+    } else {
       return { items: [], nextCursor: null };
     }
 

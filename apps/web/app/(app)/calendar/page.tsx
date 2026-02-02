@@ -16,7 +16,7 @@ import {
   addDays,
   parseISO,
 } from 'date-fns';
-import { tasks, calendarSearch, type TaskOccurrence } from '@/lib/api';
+import { tasks, type TaskOccurrence } from '@/lib/api';
 
 const OPEN_FOR_OCCURRENCE_KEY = 'calendar:openForOccurrence';
 
@@ -239,43 +239,6 @@ function CalendarSettingsModal({
   );
 }
 
-function useCalendarSearch() {
-  const [results, setResults] = useState<TaskOccurrence[]>([]);
-  const [loading, setLoading] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const runQuery = useCallback((query: string) => {
-    const q = query.trim();
-    if (!q) {
-      setResults([]);
-      setLoading(false);
-      return;
-    }
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      if (abortRef.current) abortRef.current.abort();
-      abortRef.current = new AbortController();
-      setLoading(true);
-      calendarSearch(q, { limit: 5, signal: abortRef.current.signal })
-        .then((data) => {
-          setResults(data.items);
-        })
-        .catch((err) => {
-          if (err?.name === 'AbortError') return;
-          setResults([]);
-        })
-        .finally(() => {
-          setLoading(false);
-          abortRef.current = null;
-        });
-    }, 250);
-  }, []);
-
-  return { results, loading, runQuery };
-}
-
 function formatSearchTimeRange(o: TaskOccurrence): string {
   const start = parseISO(o.occurrenceStart);
   const end = parseISO(o.occurrenceEnd);
@@ -284,119 +247,6 @@ function formatSearchTimeRange(o: TaskOccurrence): string {
     return `${startStr} – ${format(end, 'h:mm a')}`;
   }
   return startStr;
-}
-
-function CalendarSearchInput({
-  value,
-  onChange,
-  onClear,
-  onFocus,
-  onGoToSearch,
-  placeholder,
-  showPanel,
-  onClosePanel,
-  results,
-  loading,
-  selectedIndex,
-  onSelectIndex,
-  onKeyDown,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onClear: () => void;
-  onFocus: () => void;
-  onGoToSearch: (query: string) => void;
-  placeholder: string;
-  showPanel: boolean;
-  onClosePanel: () => void;
-  results: TaskOccurrence[];
-  loading: boolean;
-  selectedIndex: number;
-  onSelectIndex: (i: number) => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!showPanel) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        onClosePanel();
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showPanel, onClosePanel]);
-
-  const suggestions = results.slice(0, 5);
-  const showSuggestions = showPanel && value.trim().length > 0;
-
-  return (
-    <div ref={containerRef} className="relative w-72 max-w-full">
-      <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-blue-500/20">
-        <svg className="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={onFocus}
-          onKeyDown={onKeyDown}
-          placeholder={placeholder}
-          className="min-w-0 flex-1 bg-transparent text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none"
-          aria-label="Search calendar"
-        />
-        {value.length > 0 && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-            aria-label="Clear search"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        )}
-      </div>
-      {showSuggestions && (
-        <div className="absolute left-0 top-full z-50 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-xl">
-          {loading ? (
-            <div className="px-4 py-3 text-center text-sm text-gray-500">Searching…</div>
-          ) : suggestions.length === 0 ? (
-            <div className="px-4 py-3 text-center text-sm text-gray-500">No suggestions</div>
-          ) : (
-            <ul className="py-1" role="listbox">
-              {suggestions.map((o, i) => (
-                <li
-                  key={`${o.taskId}-${o.occurrenceStart}`}
-                  role="option"
-                  aria-selected={i === selectedIndex}
-                  className={`flex cursor-pointer items-center gap-2 px-4 py-2 text-left text-sm transition ${
-                    i === selectedIndex ? 'bg-blue-50' : 'hover:bg-gray-50'
-                  }`}
-                  onClick={() => onGoToSearch(value.trim())}
-                  onMouseEnter={() => onSelectIndex(i)}
-                >
-                  <div
-                    className="h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: o.assignedTeam?.colorHex ?? '#6b7280' }}
-                  />
-                  <span className="truncate text-gray-700">
-                    {o.customerName ?? '—'}
-                    {o.address ? ` — ${o.address}` : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="border-t border-gray-100 px-4 py-2 text-center text-xs text-gray-500">
-            Press Enter to see all results
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 export default function CalendarPage() {
@@ -412,9 +262,6 @@ export default function CalendarPage() {
     typeof window !== 'undefined' ? loadEventDisplayPrefs() : [...DEFAULT_EVENT_DISPLAY_PREFS],
   );
   const [calendarSettingsOpen, setCalendarSettingsOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchSelectedIndex, setSearchSelectedIndex] = useState(0);
   const [openForOccurrence, setOpenForOccurrence] = useState<TaskOccurrence | null>(null);
 
   const openTaskIdParam = searchParams.get('openTaskId') ?? '';
@@ -549,74 +396,10 @@ export default function CalendarPage() {
     }
   };
 
-  const {
-    results: searchResults,
-    loading: searchLoading,
-    runQuery: searchRunQuery,
-  } = useCalendarSearch();
-
-  useEffect(() => {
-    setSearchSelectedIndex((i) =>
-      searchResults.length === 0 ? 0 : Math.min(i, searchResults.length - 1),
-    );
-  }, [searchResults.length]);
-
-  const handleGoToSearch = (query: string) => {
-    const q = query.trim();
-    if (q) {
-      setSearchOpen(false);
-      router.push(`/calendar/search?q=${encodeURIComponent(q)}`);
-    }
-  };
-
   return (
     <div className="min-h-screen p-6 sm:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
-          <CalendarSearchInput
-            value={searchQuery}
-            onChange={(v) => {
-              setSearchQuery(v);
-              setSearchOpen(true);
-              setSearchSelectedIndex(0);
-              searchRunQuery(v);
-            }}
-            onClear={() => {
-              setSearchQuery('');
-              setSearchOpen(false);
-            }}
-            onFocus={() => searchQuery.trim() && setSearchOpen(true)}
-            onGoToSearch={handleGoToSearch}
-            placeholder="Search (name, phone, address)"
-            showPanel={searchOpen}
-            onClosePanel={() => setSearchOpen(false)}
-            results={searchResults}
-            loading={searchLoading}
-            selectedIndex={searchSelectedIndex}
-            onSelectIndex={setSearchSelectedIndex}
-            onKeyDown={(e) => {
-              if (!searchOpen) return;
-              if (e.key === 'Escape') {
-                setSearchOpen(false);
-                return;
-              }
-              if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setSearchSelectedIndex((i) => Math.min(i + 1, Math.max(0, searchResults.length - 1)));
-                return;
-              }
-              if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setSearchSelectedIndex((i) => Math.max(0, i - 1));
-                return;
-              }
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                handleGoToSearch(searchQuery);
-                return;
-              }
-            }}
-          />
           <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white shadow-sm">
             <button
               onClick={() => setViewDate((d) => subMonths(d, 1))}

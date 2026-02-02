@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { SearchSuggestService } from './search-suggest.service';
 import { TasksService } from '../tasks/tasks.service';
 import { subYears, addYears } from 'date-fns';
 
@@ -15,11 +16,25 @@ import { subYears, addYears } from 'date-fns';
 export class SearchController {
   private readonly logger = new Logger(SearchController.name);
 
-  constructor(private tasks: TasksService) {}
+  constructor(
+    private tasks: TasksService,
+    private searchSuggest: SearchSuggestService,
+  ) {}
+
+  @Get('suggest')
+  async getSuggest(@Query('q') q: string) {
+    const query = (q ?? '').trim();
+    if (query.length === 0) {
+      return { customers: [] };
+    }
+    const customers = await this.searchSuggest.suggest(query);
+    return { customers };
+  }
 
   @Get()
   async search(
     @Query('query') query: string,
+    @Query('customerId') customerIdParam: string | undefined,
     @Query('from') fromParam: string | undefined,
     @Query('to') toParam: string | undefined,
     @Query('limit') limitParam: string | undefined,
@@ -56,11 +71,15 @@ export class SearchController {
       throw new BadRequestException('Invalid "cursor" (must be non-negative integer)');
     }
 
+    const customerId = (customerIdParam ?? '').trim();
     const q = (query ?? '').trim();
-    if (q.length === 0) {
+    if (customerId.length === 0 && q.length === 0) {
       return { items: [], nextCursor: null };
     }
 
-    return this.tasks.search(q, fromDate, toDate, limit, offset);
+    return this.tasks.search(fromDate, toDate, limit, offset, {
+      query: q,
+      customerId: customerId || undefined,
+    });
   }
 }

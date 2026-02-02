@@ -171,14 +171,30 @@ export const customers = {
     api<void>(`/api/customers/${id}`, { method: 'DELETE' }),
 };
 
+export type SuggestCustomer = {
+  customerId: string;
+  name: string;
+  phone: string | null;
+  address: string | null;
+};
+
 export type CalendarSearchResponse = {
   items: TaskOccurrence[];
   nextCursor: string | null;
 };
 
+export const calendarSearchSuggest = (q: string, opts?: { signal?: AbortSignal }) => {
+  const params = new URLSearchParams({ q: q.trim() });
+  return api<{ customers: SuggestCustomer[] }>(
+    `/api/search/suggest?${params.toString()}`,
+    { signal: opts?.signal }
+  );
+};
+
 export const calendarSearch = (
-  query: string,
-  opts?: {
+  opts: {
+    query?: string;
+    customerId?: string;
     from?: string;
     to?: string;
     limit?: number;
@@ -188,23 +204,24 @@ export const calendarSearch = (
 ) => {
   const now = new Date();
   const from =
-    opts?.from ??
+    opts.from ??
     new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString();
   const to =
-    opts?.to ??
+    opts.to ??
     new Date(now.getFullYear() + 1, now.getMonth(), now.getDate()).toISOString();
-  const limit = opts?.limit ?? 50;
-  const params = new URLSearchParams({
-    query: query.trim(),
-    from,
-    to,
-    limit: String(limit),
-  });
-  if (opts?.cursor != null && opts.cursor !== '') {
+  const limit = opts.limit ?? 50;
+  const params = new URLSearchParams({ from, to, limit: String(limit) });
+  if (opts.customerId?.trim()) {
+    params.set('customerId', opts.customerId.trim());
+  }
+  if (opts.query?.trim()) {
+    params.set('query', opts.query.trim());
+  }
+  if (opts.cursor != null && opts.cursor !== '') {
     params.set('cursor', opts.cursor);
   }
   return api<CalendarSearchResponse>(`/api/search?${params.toString()}`, {
-    signal: opts?.signal,
+    signal: opts.signal,
   });
 };
 
