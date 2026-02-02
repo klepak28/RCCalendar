@@ -65,5 +65,13 @@ export class UpdateTaskDto {
 
   @IsOptional()
   @IsString()
+  email?: string | null;
+
+  @IsOptional()
+  @IsString()
+  leadSourceId?: string | null;
+
+  @IsOptional()
+  @IsString()
   rrule?: string | null;
 }

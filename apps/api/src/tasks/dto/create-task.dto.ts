@@ -73,5 +73,14 @@ export class CreateTaskDto {
 
   @IsOptional()
   @IsString()
+  email?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @ValidateIf((o) => o.leadSourceId !== null && o.leadSourceId !== '')
+  leadSourceId?: string | null;
+
+  @IsOptional()
+  @IsString()
   rrule?: string | null;
 }

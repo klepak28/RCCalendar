@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { rrulestr, RRuleSet, RRule } from 'rrule';
 import { addMilliseconds, differenceInMilliseconds } from 'date-fns';
@@ -16,6 +17,7 @@ export interface TaskOccurrence {
   customerId: string | null;
   address: string | null;
   phone: string | null;
+  email: string | null;
   serviceId: string | null;
   service: { id: string; name: string } | null;
   servicePriceCents: number | null;
@@ -24,6 +26,8 @@ export interface TaskOccurrence {
   allDay: boolean;
   assignedTeamId: string | null;
   assignedTeam: { id: string; name: string; colorHex: string } | null;
+  leadSourceId: string | null;
+  leadSource: { id: string; name: string } | null;
   createdById: string;
   createdBy: { id: string; username: string };
   rrule: string | null;
@@ -222,6 +226,7 @@ export class TasksService {
       customerId: string | null;
       address: string | null;
       phone: string | null;
+      email: string | null;
       serviceId: string | null;
       service: { id: string; name: string } | null;
       servicePriceCents: number | null;
@@ -229,6 +234,8 @@ export class TasksService {
       notes: string | null;
       assignedTeamId: string | null;
       assignedTeam: { id: string; name: string; colorHex: string } | null;
+      leadSourceId: string | null;
+      leadSource: { id: string; name: string } | null;
       createdById: string;
       createdBy: { id: string; username: string };
       rrule: string | null;
@@ -239,6 +246,7 @@ export class TasksService {
         customerId: string | null;
         address: string | null;
         phone: string | null;
+        email: string | null;
         serviceId: string | null;
         service: { id: string; name: string } | null;
         servicePriceCents: number | null;
@@ -249,6 +257,8 @@ export class TasksService {
         allDay: boolean | null;
         assignedTeamId: string | null;
         assignedTeam: { id: string; name: string; colorHex: string } | null;
+        leadSourceId: string | null;
+        leadSource: { id: string; name: string } | null;
       }>;
     },
     from: Date,
@@ -265,6 +275,7 @@ export class TasksService {
             customerId: task.customerId,
             address: task.address,
             phone: task.phone,
+            email: (task as { email?: string | null }).email ?? null,
             serviceId: task.serviceId,
             service: task.service,
             servicePriceCents: task.servicePriceCents,
@@ -273,6 +284,8 @@ export class TasksService {
             allDay: task.allDay,
             assignedTeamId: task.assignedTeamId,
             assignedTeam: task.assignedTeam,
+            leadSourceId: (task as { leadSourceId?: string | null }).leadSourceId ?? null,
+            leadSource: (task as { leadSource?: { id: string; name: string } | null }).leadSource ?? null,
             createdById: task.createdById,
             createdBy: task.createdBy,
             rrule: null,
@@ -387,6 +400,8 @@ export class TasksService {
           }
           
           const override = overrideMap.get(occurrenceTimestamp);
+          const taskWithExtras = task as { email?: string | null; leadSourceId?: string | null; leadSource?: { id: string; name: string } | null };
+          const overrideWithExtras = override as { email?: string | null; leadSourceId?: string | null; leadSource?: { id: string; name: string } | null } | undefined;
           return {
             taskId: task.id,
             occurrenceStart: (override?.startAt || start).toISOString(),
@@ -395,6 +410,7 @@ export class TasksService {
             customerId: override?.customerId ?? task.customerId,
             address: override?.address ?? task.address,
             phone: override?.phone ?? task.phone,
+            email: overrideWithExtras?.email ?? taskWithExtras.email ?? null,
             serviceId: override?.serviceId ?? task.serviceId,
             service: override?.service ?? task.service,
             servicePriceCents: override?.servicePriceCents ?? task.servicePriceCents,
@@ -403,6 +419,8 @@ export class TasksService {
             allDay: override?.allDay ?? task.allDay,
             assignedTeamId: override?.assignedTeamId ?? task.assignedTeamId,
             assignedTeam: override?.assignedTeam ?? task.assignedTeam,
+            leadSourceId: overrideWithExtras?.leadSourceId ?? taskWithExtras.leadSourceId ?? null,
+            leadSource: overrideWithExtras?.leadSource ?? taskWithExtras.leadSource ?? null,
             createdById: task.createdById,
             createdBy: task.createdBy,
             rrule: task.rrule,
@@ -429,6 +447,8 @@ export class TasksService {
         const overrideEnd = (override as { endAt?: Date | null }).endAt
           ? new Date((override as { endAt: Date }).endAt)
           : addMilliseconds(overrideStartNorm, durationMs);
+        const taskWithExtras = task as { email?: string | null; leadSourceId?: string | null; leadSource?: { id: string; name: string } | null };
+        const ovWithExtras = override as { email?: string | null; leadSourceId?: string | null; leadSource?: { id: string; name: string } | null };
         base.push({
           taskId: task.id,
           occurrenceStart: overrideStartNorm.toISOString(),
@@ -437,6 +457,7 @@ export class TasksService {
           customerId: override.customerId ?? task.customerId,
           address: override.address ?? task.address,
           phone: override.phone ?? task.phone,
+          email: ovWithExtras.email ?? taskWithExtras.email ?? null,
           serviceId: override.serviceId ?? task.serviceId,
           service: override.service ?? task.service,
           servicePriceCents: override.servicePriceCents ?? task.servicePriceCents,
@@ -445,6 +466,8 @@ export class TasksService {
           allDay: override.allDay ?? task.allDay,
           assignedTeamId: override.assignedTeamId ?? task.assignedTeamId,
           assignedTeam: override.assignedTeam ?? task.assignedTeam,
+          leadSourceId: ovWithExtras.leadSourceId ?? taskWithExtras.leadSourceId ?? null,
+          leadSource: ovWithExtras.leadSource ?? taskWithExtras.leadSource ?? null,
           createdById: task.createdById,
           createdBy: task.createdBy,
           rrule: task.rrule,
@@ -496,12 +519,14 @@ export class TasksService {
           customer: true,
           service: true,
           assignedTeam: true,
+          leadSource: true,
           createdBy: { select: { id: true, username: true } },
           overrides: {
             include: {
               customer: true,
               service: true,
               assignedTeam: true,
+              leadSource: true,
             },
           },
         },
@@ -512,7 +537,7 @@ export class TasksService {
       if (recurringIds.length > 0) {
         const overrides = await this.prisma.taskOverride.findMany({
           where: { seriesId: { in: recurringIds } },
-          include: { customer: true, service: true, assignedTeam: true },
+          include: { customer: true, service: true, assignedTeam: true, leadSource: true },
         });
         const byTask = new Map<string, typeof overrides>();
         for (const o of overrides) {
@@ -679,12 +704,14 @@ export class TasksService {
         customer: true,
         service: true,
         assignedTeam: true,
+        leadSource: true,
         createdBy: { select: { id: true, username: true } },
         overrides: {
           include: {
             customer: true,
             service: true,
             assignedTeam: true,
+            leadSource: true,
           },
         },
       },
@@ -694,7 +721,7 @@ export class TasksService {
     if (recurringIds.length > 0) {
       const overrides = await this.prisma.taskOverride.findMany({
         where: { seriesId: { in: recurringIds } },
-        include: { customer: true, service: true, assignedTeam: true },
+        include: { customer: true, service: true, assignedTeam: true, leadSource: true },
       });
       const byTask = new Map<string, typeof overrides>();
       for (const o of overrides) {
@@ -811,6 +838,7 @@ export class TasksService {
     let customerName = dto.customerName.trim();
     let address = this.normalizeString(dto.address);
     let phone = this.normalizeString(dto.phone);
+    let email = this.normalizeString(dto.email);
 
     // If customerId is provided, fetch customer and snapshot data
     if (customerId) {
@@ -822,11 +850,27 @@ export class TasksService {
         customerName = customer.fullName;
         address = customer.address;
         phone = customer.phone;
+        email = customer.email ?? null;
       } catch (error) {
         if (this.isDev) {
           this.logger.error(`Failed to fetch customer ${customerId}:`, error);
         }
         throw new BadRequestException(`Customer not found: ${customerId}`);
+      }
+    }
+
+    // Validate leadSource exists if provided
+    const normalizedLeadSourceId = this.normalizeString(dto.leadSourceId);
+    if (normalizedLeadSourceId) {
+      try {
+        await this.prisma.leadSource.findUniqueOrThrow({
+          where: { id: normalizedLeadSourceId },
+        });
+      } catch (err) {
+        if (this.isDev) {
+          this.logger.error(`Failed to fetch leadSource ${normalizedLeadSourceId}:`, err);
+        }
+        throw new BadRequestException(`Lead source not found: ${normalizedLeadSourceId}`);
       }
     }
 
@@ -836,6 +880,7 @@ export class TasksService {
       customerId,
       address,
       phone,
+      email,
       serviceId: normalizedServiceId,
       servicePriceCents,
       description: this.normalizeString(dto.description),
@@ -844,6 +889,7 @@ export class TasksService {
       endAt,
       allDay: dto.allDay ?? false,
       assignedTeamId: this.normalizeString(dto.assignedTeamId),
+      leadSourceId: normalizedLeadSourceId,
       createdById: userId,
       rrule: this.normalizeString(dto.rrule),
     };
@@ -863,6 +909,7 @@ export class TasksService {
           customer: true,
           service: true,
           assignedTeam: true,
+          leadSource: true,
           createdBy: { select: { id: true, username: true } },
         },
       });
@@ -936,6 +983,9 @@ export class TasksService {
     let phone: string | null | undefined = dto.phone !== undefined
       ? this.normalizeString(dto.phone)
       : undefined;
+    let email: string | null | undefined = dto.email !== undefined
+      ? this.normalizeString(dto.email)
+      : undefined;
 
     // If customerId is being set/changed, fetch customer and snapshot data
     if (customerId !== undefined && customerId !== null) {
@@ -947,6 +997,7 @@ export class TasksService {
         customerName = customer.fullName;
         address = customer.address;
         phone = customer.phone;
+        email = customer.email ?? null;
       } catch (error) {
         if (this.isDev) {
           this.logger.error(`Failed to fetch customer ${customerId}:`, error);
@@ -955,11 +1006,26 @@ export class TasksService {
       }
     }
 
+    // Validate leadSource if provided
+    if (dto.leadSourceId !== undefined && dto.leadSourceId && dto.leadSourceId.trim()) {
+      try {
+        await this.prisma.leadSource.findUniqueOrThrow({
+          where: { id: dto.leadSourceId.trim() },
+        });
+      } catch (err) {
+        if (this.isDev) {
+          this.logger.error(`Failed to fetch leadSource ${dto.leadSourceId}:`, err);
+        }
+        throw new BadRequestException(`Lead source not found: ${dto.leadSourceId}`);
+      }
+    }
+
     const updateData: {
         customerName?: string;
         customerId?: string | null;
         address?: string | null;
         phone?: string | null;
+        email?: string | null;
         serviceId?: string | null;
         servicePriceCents?: number | null;
         description?: string | null;
@@ -968,6 +1034,7 @@ export class TasksService {
         endAt?: Date;
         allDay?: boolean;
         assignedTeamId?: string | null;
+        leadSourceId?: string | null;
         rrule?: string | null;
       } = {};
     
@@ -975,6 +1042,7 @@ export class TasksService {
     if (customerId !== undefined) updateData.customerId = customerId;
     if (address !== undefined) updateData.address = address;
     if (phone !== undefined) updateData.phone = phone;
+    if (email !== undefined) updateData.email = email;
     if (normalizedServiceId !== undefined) updateData.serviceId = normalizedServiceId;
     if (servicePriceCents !== undefined) updateData.servicePriceCents = servicePriceCents;
     if (dto.description !== undefined) updateData.description = dto.description ?? null;
@@ -1013,6 +1081,7 @@ export class TasksService {
     
     if (dto.allDay !== undefined) updateData.allDay = dto.allDay;
     if (dto.assignedTeamId !== undefined) updateData.assignedTeamId = (dto.assignedTeamId && dto.assignedTeamId.trim()) ? dto.assignedTeamId : null;
+    if (dto.leadSourceId !== undefined) updateData.leadSourceId = (dto.leadSourceId && dto.leadSourceId.trim()) ? dto.leadSourceId.trim() : null;
     if (dto.rrule !== undefined) {
       const dtstart = (dto.startAt ? new Date(dto.startAt) : existing.startAt) as Date;
       if (dto.rrule != null && dto.rrule !== '') {
@@ -1061,16 +1130,19 @@ export class TasksService {
         overrideData.customerName = customer.fullName;
         overrideData.address = customer.address;
         overrideData.phone = customer.phone;
+        overrideData.email = customer.email ?? null;
       } else {
         overrideData.customerId = null;
         overrideData.customerName = dto.customerName ?? null;
         overrideData.address = dto.address !== undefined ? this.normalizeString(dto.address) : null;
         overrideData.phone = dto.phone !== undefined ? this.normalizeString(dto.phone) : null;
+        overrideData.email = dto.email !== undefined ? this.normalizeString(dto.email) : null;
       }
-    } else if (dto.customerName !== undefined || dto.address !== undefined || dto.phone !== undefined) {
+    } else if (dto.customerName !== undefined || dto.address !== undefined || dto.phone !== undefined || dto.email !== undefined) {
       overrideData.customerName = dto.customerName ?? null;
       overrideData.address = dto.address !== undefined ? this.normalizeString(dto.address) : null;
       overrideData.phone = dto.phone !== undefined ? this.normalizeString(dto.phone) : null;
+      overrideData.email = dto.email !== undefined ? this.normalizeString(dto.email) : null;
     }
 
     // Handle other fields
@@ -1086,6 +1158,11 @@ export class TasksService {
     if (dto.allDay !== undefined) overrideData.allDay = dto.allDay;
     if (dto.assignedTeamId !== undefined) {
       overrideData.assignedTeamId = dto.assignedTeamId ? this.normalizeString(dto.assignedTeamId) : null;
+    }
+    if (dto.leadSourceId !== undefined) {
+      overrideData.leadSourceId = dto.leadSourceId && dto.leadSourceId.trim()
+        ? dto.leadSourceId.trim()
+        : null;
     }
 
     // Handle date updates
@@ -1124,11 +1201,13 @@ export class TasksService {
     });
 
     // Create new series starting from occurrence date
-    const newSeriesData: any = {
+    const existingWithExtras = existing as { email?: string | null; leadSourceId?: string | null };
+    const newSeriesData: Record<string, unknown> = {
       customerName: dto.customerName ?? existing.customerName,
       customerId: dto.customerId !== undefined ? this.normalizeString(dto.customerId) : existing.customerId,
       address: dto.address !== undefined ? this.normalizeString(dto.address) : existing.address,
       phone: dto.phone !== undefined ? this.normalizeString(dto.phone) : existing.phone,
+      email: dto.email !== undefined ? this.normalizeString(dto.email) : existingWithExtras.email ?? null,
       serviceId: dto.serviceId !== undefined ? this.normalizeString(dto.serviceId) : existing.serviceId,
       servicePriceCents: dto.servicePriceCents ?? existing.servicePriceCents,
       description: dto.description ?? existing.description,
@@ -1140,6 +1219,9 @@ export class TasksService {
       })(),
       allDay: dto.allDay ?? existing.allDay,
       assignedTeamId: dto.assignedTeamId !== undefined ? this.normalizeString(dto.assignedTeamId) : existing.assignedTeamId,
+      leadSourceId: dto.leadSourceId !== undefined
+        ? (dto.leadSourceId && dto.leadSourceId.trim() ? dto.leadSourceId.trim() : null)
+        : existingWithExtras.leadSourceId ?? null,
       createdById: existing.createdById,
       rrule: existing.rrule, // Same recurrence rule
     };
@@ -1147,19 +1229,21 @@ export class TasksService {
     // Handle customer snapshot if customerId is provided
     if (newSeriesData.customerId) {
       const customer = await this.prisma.customer.findUniqueOrThrow({
-        where: { id: newSeriesData.customerId },
+        where: { id: newSeriesData.customerId as string },
       });
       newSeriesData.customerName = customer.fullName;
       newSeriesData.address = customer.address;
       newSeriesData.phone = customer.phone;
+      newSeriesData.email = customer.email ?? null;
     }
 
     return this.prisma.task.create({
-      data: newSeriesData,
+      data: newSeriesData as unknown as Prisma.TaskUncheckedCreateInput,
       include: {
         customer: true,
         service: true,
         assignedTeam: true,
+        leadSource: true,
         createdBy: { select: { id: true, username: true } },
       },
     });
@@ -1171,6 +1255,7 @@ export class TasksService {
       include: {
         service: true,
         assignedTeam: true,
+        leadSource: true,
         createdBy: { select: { id: true, username: true } },
         overrides: {
           where: {
