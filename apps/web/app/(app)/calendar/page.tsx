@@ -11,12 +11,14 @@ import {
   endOfWeek,
   addMonths,
   subMonths,
+  addDays,
+  subDays,
   isSameMonth,
   isToday,
-  addDays,
   parseISO,
 } from 'date-fns';
 import { tasks, type TaskOccurrence } from '@/lib/api';
+import DayView, { type CreatePrefill } from './components/DayView';
 
 const OPEN_FOR_OCCURRENCE_KEY = 'calendar:openForOccurrence';
 
@@ -263,6 +265,11 @@ export default function CalendarPage() {
   );
   const [calendarSettingsOpen, setCalendarSettingsOpen] = useState(false);
   const [openForOccurrence, setOpenForOccurrence] = useState<TaskOccurrence | null>(null);
+  const viewParam = searchParams.get('view');
+  const [calendarView, setCalendarView] = useState<'month' | 'day'>(() =>
+    viewParam === 'day' ? 'day' : 'month',
+  );
+  const [createPrefill, setCreatePrefill] = useState<CreatePrefill | null>(null);
 
   const openTaskIdParam = searchParams.get('openTaskId') ?? '';
   const occurrenceStartParam = searchParams.get('occurrenceStart') ?? '';
@@ -354,6 +361,21 @@ export default function CalendarPage() {
     setEventDisplayPrefs(loadEventDisplayPrefs());
   }, []);
 
+  useEffect(() => {
+    if (viewParam === 'day') setCalendarView('day');
+    else if (viewParam === 'month') setCalendarView('month');
+  }, [viewParam]);
+
+  const setViewWithUrl = useCallback(
+    (view: 'month' | 'day') => {
+      setCalendarView(view);
+      const params = new URLSearchParams(searchParams.toString());
+      params.set('view', view);
+      router.replace(`/calendar?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+
   const gridStart = startOfWeek(startOfMonth(viewDate), { weekStartsOn: 0 });
   const gridEnd = endOfWeek(endOfMonth(viewDate), { weekStartsOn: 0 });
   const days: Date[] = [];
@@ -402,9 +424,13 @@ export default function CalendarPage() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white shadow-sm">
             <button
-              onClick={() => setViewDate((d) => subMonths(d, 1))}
+              onClick={() =>
+                setViewDate((d) =>
+                  calendarView === 'day' ? subDays(d, 1) : subMonths(d, 1),
+                )
+              }
               className="rounded-l-lg px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-              aria-label="Previous month"
+              aria-label={calendarView === 'day' ? 'Previous day' : 'Previous month'}
             >
               Prev
             </button>
@@ -416,11 +442,39 @@ export default function CalendarPage() {
               Today
             </button>
             <button
-              onClick={() => setViewDate((d) => addMonths(d, 1))}
+              onClick={() =>
+                setViewDate((d) =>
+                  calendarView === 'day' ? addDays(d, 1) : addMonths(d, 1),
+                )
+              }
               className="rounded-r-lg px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-              aria-label="Next month"
+              aria-label={calendarView === 'day' ? 'Next day' : 'Next month'}
             >
               Next
+            </button>
+          </div>
+          <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setViewWithUrl('month')}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                calendarView === 'month'
+                  ? 'bg-gray-100 text-gray-800'
+                  : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              Month
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewWithUrl('day')}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                calendarView === 'day'
+                  ? 'bg-gray-100 text-gray-800'
+                  : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              Day
             </button>
           </div>
           <div className="relative">
@@ -430,7 +484,9 @@ export default function CalendarPage() {
               className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-lg font-semibold text-gray-800 shadow-sm transition hover:border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               aria-label="Pick date to jump to"
             >
-              {format(viewDate, 'MMMM yyyy')}
+              {calendarView === 'day'
+                ? format(viewDate, 'EEE, MMM d, yyyy')
+                : format(viewDate, 'MMMM yyyy')}
               <svg className="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
@@ -476,6 +532,23 @@ export default function CalendarPage() {
         />
       )}
 
+      {calendarView === 'day' ? (
+        <DayView
+          viewDate={viewDate}
+          onPrev={() => setViewDate((d) => subDays(d, 1))}
+          onNext={() => setViewDate((d) => addDays(d, 1))}
+          onTaskClick={(occ) => {
+            setOpenForOccurrence(occ);
+            setSelectedDate(viewDate);
+            setDrawerOpen(true);
+          }}
+          onEmptySlotClick={(prefill) => {
+            setCreatePrefill(prefill);
+            setSelectedDate(prefill.date);
+            setDrawerOpen(true);
+          }}
+        />
+      ) : (
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
         <div className="grid grid-cols-7 border-b border-gray-200 bg-gray-50/80">
           {WEEKDAYS.map((wd) => (
@@ -552,15 +625,21 @@ export default function CalendarPage() {
           ))
         )}
       </div>
+      )}
 
       {drawerOpen && selectedDate && (
         <DayDrawer
           date={selectedDate}
           occurrences={selectedOccurrences}
-          onClose={() => setDrawerOpen(false)}
+          onClose={() => {
+            setDrawerOpen(false);
+            setCreatePrefill(null);
+          }}
           onTaskChange={loadTasks}
           openForOccurrence={openForOccurrence}
           onClearOpenForOccurrence={() => setOpenForOccurrence(null)}
+          createPrefill={createPrefill}
+          onClearCreatePrefill={() => setCreatePrefill(null)}
         />
       )}
     </div>
@@ -574,6 +653,8 @@ function DayDrawer({
   onTaskChange,
   openForOccurrence,
   onClearOpenForOccurrence,
+  createPrefill,
+  onClearCreatePrefill,
 }: {
   date: Date;
   occurrences: TaskOccurrence[];
@@ -581,6 +662,8 @@ function DayDrawer({
   onTaskChange: () => void;
   openForOccurrence: TaskOccurrence | null;
   onClearOpenForOccurrence: () => void;
+  createPrefill?: CreatePrefill | null;
+  onClearCreatePrefill?: () => void;
 }) {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -589,6 +672,7 @@ function DayDrawer({
   const [deletingOccurrence, setDeletingOccurrence] = useState<TaskOccurrence | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [pendingCreatePrefill, setPendingCreatePrefill] = useState<CreatePrefill | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -598,12 +682,20 @@ function DayDrawer({
   const onClearOpenRef = useRef(onClearOpenForOccurrence);
   onClearOpenRef.current = onClearOpenForOccurrence;
   useEffect(() => {
-    if (!openForOccurrence) return;
-    setEditingOccurrence(openForOccurrence);
-    setEditingId(openForOccurrence.taskId);
-    setShowModal(true);
-    onClearOpenRef.current();
-  }, [openForOccurrence]);
+    if (openForOccurrence) {
+      setEditingOccurrence(openForOccurrence);
+      setEditingId(openForOccurrence.taskId);
+      setPendingCreatePrefill(null);
+      setShowModal(true);
+      onClearOpenRef.current();
+    } else if (createPrefill) {
+      setEditingOccurrence(null);
+      setEditingId(null);
+      setPendingCreatePrefill(createPrefill);
+      setShowModal(true);
+      onClearCreatePrefill?.();
+    }
+  }, [openForOccurrence, createPrefill, onClearCreatePrefill]);
 
   const handleDeleteClick = (occurrence: TaskOccurrence) => {
     setDeletingOccurrence(occurrence);
@@ -763,16 +855,21 @@ function DayDrawer({
           date={date}
           taskId={editingId}
           occurrence={editingOccurrence ?? undefined}
+          initialStartAt={pendingCreatePrefill?.startAt}
+          initialEndAt={pendingCreatePrefill?.endAt}
+          initialAssignedTeamId={pendingCreatePrefill?.assignedTeamId ?? undefined}
           onClose={() => {
             setShowModal(false);
             setEditingId(null);
             setEditingOccurrence(null);
+            setPendingCreatePrefill(null);
           }}
           onSaved={() => {
             onTaskChange();
             setShowModal(false);
             setEditingId(null);
             setEditingOccurrence(null);
+            setPendingCreatePrefill(null);
           }}
         />
       )}
@@ -926,12 +1023,18 @@ function TaskModal({
   date,
   taskId,
   occurrence,
+  initialStartAt,
+  initialEndAt,
+  initialAssignedTeamId,
   onClose,
   onSaved,
 }: {
   date: Date;
   taskId: string | null;
   occurrence?: TaskOccurrence;
+  initialStartAt?: string;
+  initialEndAt?: string;
+  initialAssignedTeamId?: string | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1123,12 +1226,21 @@ function TaskModal({
         }
       }).catch(() => {});
     } else {
-      const dayStart = new Date(date);
-      dayStart.setHours(9, 0, 0, 0);
-      const dayEnd = new Date(date);
-      dayEnd.setHours(17, 0, 0, 0);
-      setStartAt(toIso(dayStart));
-      setEndAt(toIso(dayEnd));
+      let dayStartForPrefs: Date;
+      if (initialStartAt && initialEndAt) {
+        setStartAt(initialStartAt);
+        setEndAt(initialEndAt);
+        if (initialAssignedTeamId != null) setAssignedTeamId(initialAssignedTeamId);
+        dayStartForPrefs = new Date(initialStartAt);
+      } else {
+        const dayStart = new Date(date);
+        dayStart.setHours(9, 0, 0, 0);
+        const dayEnd = new Date(date);
+        dayEnd.setHours(17, 0, 0, 0);
+        setStartAt(toIso(dayStart));
+        setEndAt(toIso(dayEnd));
+        dayStartForPrefs = dayStart;
+      }
       setPriceDisplay('');
       setServicePriceCents(null);
       setCustomerName('');
@@ -1140,7 +1252,7 @@ function TaskModal({
       setRecurrence('once');
       setMonthlyInterval(1);
       setMonthlyPattern('day');
-      setMonthlyDay(getLocalDayOfMonth(dayStart));
+      setMonthlyDay(getLocalDayOfMonth(dayStartForPrefs));
       monthlyDaySyncedFromStartRef.current = false;
       setMonthlyNth(1);
       setMonthlyWeekday(0);
@@ -1151,7 +1263,7 @@ function TaskModal({
       setYearlyNth(1);
       setYearlyWeekday(0);
     }
-  }, [taskId, date, occurrence]);
+  }, [taskId, date, occurrence, initialStartAt, initialEndAt, initialAssignedTeamId]);
 
   async function performUpdate(payload: Record<string, unknown>, scope?: 'single' | 'following' | 'all', occurrenceStart?: string) {
     if (!taskId) return;
