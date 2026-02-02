@@ -7,10 +7,11 @@ import { calendarSearchSuggest, type SuggestCustomer } from '@/lib/api';
 const SUGGEST_DEBOUNCE_MS = 250;
 const MIN_QUERY_LENGTH = 2;
 
-function formatSuggestionRow(c: SuggestCustomer): string {
-  const phone = c.phone?.trim() || '—';
-  const address = c.address?.trim() || '—';
-  return `${c.name} — ${phone} — ${address}`;
+function formatSecondaryLine(c: SuggestCustomer): string {
+  const phone = c.phone?.trim();
+  const address = c.address?.trim();
+  if (phone && address) return `${phone} • ${address}`;
+  return phone || address || '';
 }
 
 function dedupeByCustomerId(items: SuggestCustomer[]): SuggestCustomer[] {
@@ -205,24 +206,30 @@ export default function HeaderSearchBox() {
             ) : suggestions.length === 0 ? (
               <div className="px-4 py-3 text-center text-sm text-gray-500">No suggestions</div>
             ) : (
-              suggestions.map((c, i) => (
-                <div
-                  key={c.customerId}
-                  id={`suggestion-${i}`}
-                  role="option"
-                  aria-selected={i === highlightedIndex}
-                  className={`flex cursor-pointer items-center px-4 py-2 text-left text-sm transition ${
-                    i === highlightedIndex ? 'bg-blue-50' : 'hover:bg-gray-50'
-                  }`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    handleSelectSuggestion(c);
-                  }}
-                  onMouseEnter={() => setHighlightedIndex(i)}
-                >
-                  <span className="truncate text-gray-700">{formatSuggestionRow(c)}</span>
-                </div>
-              ))
+              suggestions.map((c, i) => {
+                const secondary = formatSecondaryLine(c);
+                return (
+                  <div
+                    key={c.customerId}
+                    id={`suggestion-${i}`}
+                    role="option"
+                    aria-selected={i === highlightedIndex}
+                    className={`flex min-w-0 cursor-pointer flex-col justify-center px-4 py-2.5 text-left transition ${
+                      i === highlightedIndex ? 'bg-blue-50' : 'hover:bg-gray-50'
+                    }`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      handleSelectSuggestion(c);
+                    }}
+                    onMouseEnter={() => setHighlightedIndex(i)}
+                  >
+                    <span className="truncate text-sm font-medium text-gray-800">{c.name}</span>
+                    {secondary && (
+                      <span className="truncate text-xs text-gray-500">{secondary}</span>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
           <div className="border-t border-gray-100 px-4 py-2 text-center text-xs text-gray-500">

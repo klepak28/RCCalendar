@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, parseISO, isToday } from 'date-fns';
 import { tasks, teams, sortTeamsNaturally, type TaskOccurrence, type Team } from '@/lib/api';
 import { getEventDisplayLines } from '@/lib/calendar-settings';
@@ -141,28 +141,14 @@ export default function DayView({
       ? (currentMinutes - gridStartMinutes) * PX_PER_MINUTE
       : null;
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const lineRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!showCurrentTimeLine || !lineRef.current || !scrollRef.current) return;
-    const setLineWidth = () => {
-      if (lineRef.current && scrollRef.current) {
-        lineRef.current.style.width = `${scrollRef.current.scrollWidth}px`;
-      }
-    };
-    setLineWidth();
-    const ro = new ResizeObserver(setLineWidth);
-    ro.observe(scrollRef.current);
-    return () => ro.disconnect();
-  }, [showCurrentTimeLine, columns.length]);
-
   const hours: number[] = [];
   for (let h = HOUR_START; h < HOUR_END; h++) {
     hours.push(h);
   }
 
-  const gridMinWidth = 80 + columns.length * 120;
+  const HOURS_COL_WIDTH = 60;
+  const teamsAreaWidth = columns.length * 120;
+  const gridMinWidth = HOURS_COL_WIDTH + teamsAreaWidth;
   const contentHeight = 41 + GRID_HEIGHT_PX;
 
   return (
@@ -176,142 +162,164 @@ export default function DayView({
         </div>
       )}
       <div
-        ref={scrollRef}
         className="h-full overflow-x-scroll overflow-y-scroll"
-        style={{
-          scrollbarGutter: 'stable both-edges',
-        }}
+        style={{ scrollbarGutter: 'stable both-edges' }}
       >
         <div
-          className="relative"
+          className="flex"
           style={{
             minWidth: gridMinWidth,
             width: 'max-content',
             height: contentHeight,
           }}
         >
+          {/* Sticky hours column */}
           <div
-            className="grid"
-            style={{
-              gridTemplateColumns: `80px repeat(${columns.length}, minmax(120px, 1fr))`,
-              width: gridMinWidth,
-            }}
+            className="sticky left-0 z-30 flex shrink-0 flex-col border-r border-gray-200 bg-white shadow-[2px_0_4px_rgba(0,0,0,0.06)]"
+            style={{ width: HOURS_COL_WIDTH }}
           >
-        <div className="border-b border-r border-gray-200 bg-gray-50/80" />
-        {columns.map((col) => (
-          <div
-            key={col.id ?? 'unassigned'}
-            className="border-b border-r border-gray-200 bg-gray-50/80 py-2 text-center text-xs font-semibold uppercase tracking-wider text-gray-600 last:border-r-0"
-          >
-            {col.name}
-          </div>
-        ))}
-
-        {hours.map((hour) => (
-          <React.Fragment key={hour}>
-            <div
-              className="border-r border-gray-100 pr-1 text-right text-xs text-gray-500"
-              style={{ height: 60 * PX_PER_MINUTE }}
-            >
-              {format(new Date(2000, 0, 1, hour, 0), 'h a')}
-            </div>
-            {columns.map((col) => (
+            <div className="h-[41px] border-b border-gray-200 bg-gray-50/80" />
+            {hours.map((hour) => (
               <div
-                key={`${hour}-${col.id ?? 'u'}`}
-                className="relative border-b border-r border-gray-100 last:border-r-0"
-                style={{ height: 60 * PX_PER_MINUTE }}
+                key={hour}
+                className="border-b border-gray-100 pr-1 text-right text-xs text-gray-500"
+                style={{ height: 60 * PX_PER_MINUTE, lineHeight: `${60 * PX_PER_MINUTE}px` }}
               >
-                <div
-                  className="absolute inset-0 cursor-pointer hover:bg-blue-50/30"
-                  onClick={() => handleSlotClick(hour, 0, col.id)}
-                />
-                <div
-                  className="absolute inset-x-0 top-1/2 border-t border-dashed border-gray-100"
-                  style={{ height: 0 }}
-                />
-                <div
-                  className="absolute inset-0 top-1/2 cursor-pointer hover:bg-blue-50/30"
-                  onClick={() => handleSlotClick(hour, 30, col.id)}
-                />
+                {format(new Date(2000, 0, 1, hour, 0), 'h a')}
               </div>
             ))}
-          </React.Fragment>
-        ))}
-
-            <div style={{ height: 0, gridColumn: '1 / -1' }} />
           </div>
 
+          {/* Teams area (scrolls horizontally) */}
           <div
-            className="pointer-events-none absolute left-0 top-[41px] z-10"
-            style={{
-              height: GRID_HEIGHT_PX,
-              width: gridMinWidth,
-              display: 'grid',
-              gridTemplateColumns: `80px repeat(${columns.length}, minmax(120px, 1fr))`,
-            }}
+            className="relative flex shrink-0 flex-col"
+            style={{ minWidth: teamsAreaWidth }}
           >
-        <div className="col-span-1" />
-        {columns.map((col) => (
-          <div
-            key={`ev-${col.id ?? 'u'}`}
-            className="pointer-events-auto relative col-span-1"
-            onClick={(e) => {
-              if ((e.target as HTMLElement).closest('[data-event-block]')) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              const yOffset = e.clientY - rect.top;
-              const minutesFromStart = gridStartMinutes + yOffset / PX_PER_MINUTE;
-              const rounded = Math.round(minutesFromStart / 30) * 30;
-              const hour = HOUR_START + Math.floor(rounded / 60);
-              const minute = rounded % 60;
-              handleSlotClick(hour, minute, col.id);
-            }}
-          >
-            {occurrencesForDay
-              .filter((o) => (o.assignedTeamId ?? null) === col.id)
-              .map((o) => {
-                const start = parseISO(o.occurrenceStart);
-                const end = parseISO(o.occurrenceEnd);
-                const top = (minutesFromMidnight(start) - gridStartMinutes) * PX_PER_MINUTE;
-                const h = Math.max(20, durationMinutes(start, end) * PX_PER_MINUTE);
-                const color = o.assignedTeam?.colorHex ?? '#6b7280';
-                const lines = getEventDisplayLines(o, calendarSettings);
-
-                return (
-                  <div
-                    key={`${o.taskId}-${o.occurrenceStart}`}
-                    className="absolute left-0.5 right-0.5 cursor-pointer overflow-hidden rounded px-1.5 py-0.5 text-white shadow-sm transition hover:opacity-90"
-                    style={{
-                      top,
-                      height: h,
-                      minHeight: 20,
-                      backgroundColor: color,
-                    }}
-                    data-event-block
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTaskClick(o);
-                    }}
-                  >
-                    {lines.map((line, i) => (
-                      <div key={i} className="truncate text-[10px] leading-tight">
-                        {line}
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-          </div>
-        ))}
-
-          </div>
-
-          {showCurrentTimeLine && currentLineTop != null && (
+            {/* Team headers */}
             <div
-              ref={lineRef}
-              className="pointer-events-none absolute left-0 z-20 h-0.5 bg-red-500"
-              style={{ top: 41 + currentLineTop }}
-            />
-          )}
+              className="grid shrink-0 border-b border-gray-200 bg-gray-50/80"
+              style={{
+                gridTemplateColumns: `repeat(${columns.length}, minmax(120px, 1fr))`,
+                width: teamsAreaWidth,
+              }}
+            >
+              {columns.map((col) => (
+                <div
+                  key={col.id ?? 'unassigned'}
+                  className="border-r border-gray-200 py-2 text-center text-xs font-semibold uppercase tracking-wider text-gray-600 last:border-r-0"
+                >
+                  {col.name}
+                </div>
+              ))}
+            </div>
+
+            {/* Hour rows (slots) */}
+            <div
+              className="grid shrink-0"
+              style={{
+                gridTemplateColumns: `repeat(${columns.length}, minmax(120px, 1fr))`,
+                width: teamsAreaWidth,
+                height: GRID_HEIGHT_PX,
+              }}
+            >
+              {hours.map((hour) =>
+                columns.map((col) => (
+                  <div
+                    key={`${hour}-${col.id ?? 'u'}`}
+                    className="relative border-b border-r border-gray-100 last:border-r-0"
+                    style={{ height: 60 * PX_PER_MINUTE }}
+                  >
+                    <div
+                      className="absolute inset-0 cursor-pointer hover:bg-blue-50/30"
+                      onClick={() => handleSlotClick(hour, 0, col.id)}
+                    />
+                    <div
+                      className="absolute inset-x-0 top-1/2 border-t border-dashed border-gray-100"
+                      style={{ height: 0 }}
+                    />
+                    <div
+                      className="absolute inset-0 top-1/2 cursor-pointer hover:bg-blue-50/30"
+                      onClick={() => handleSlotClick(hour, 30, col.id)}
+                    />
+                  </div>
+                )),
+              )}
+            </div>
+
+            {/* Events overlay */}
+            <div
+              className="pointer-events-none absolute left-0 top-[41px] z-10"
+              style={{
+                height: GRID_HEIGHT_PX,
+                width: teamsAreaWidth,
+                display: 'grid',
+                gridTemplateColumns: `repeat(${columns.length}, minmax(120px, 1fr))`,
+              }}
+            >
+              {columns.map((col) => (
+                <div
+                  key={`ev-${col.id ?? 'u'}`}
+                  className="pointer-events-auto relative col-span-1"
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest('[data-event-block]')) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const yOffset = e.clientY - rect.top;
+                    const minutesFromStart = gridStartMinutes + yOffset / PX_PER_MINUTE;
+                    const rounded = Math.round(minutesFromStart / 30) * 30;
+                    const hr = HOUR_START + Math.floor(rounded / 60);
+                    const mn = rounded % 60;
+                    handleSlotClick(hr, mn, col.id);
+                  }}
+                >
+                  {occurrencesForDay
+                    .filter((o) => (o.assignedTeamId ?? null) === col.id)
+                    .map((o) => {
+                      const start = parseISO(o.occurrenceStart);
+                      const end = parseISO(o.occurrenceEnd);
+                      const top = (minutesFromMidnight(start) - gridStartMinutes) * PX_PER_MINUTE;
+                      const blockH = Math.max(20, durationMinutes(start, end) * PX_PER_MINUTE);
+                      const color = o.assignedTeam?.colorHex ?? '#6b7280';
+                      const lines = getEventDisplayLines(o, calendarSettings);
+
+                      return (
+                        <div
+                          key={`${o.taskId}-${o.occurrenceStart}`}
+                          className="absolute left-0.5 right-0.5 cursor-pointer overflow-hidden rounded px-1.5 py-0.5 text-white shadow-sm transition hover:opacity-90"
+                          style={{
+                            top,
+                            height: blockH,
+                            minHeight: 20,
+                            backgroundColor: color,
+                          }}
+                          data-event-block
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onTaskClick(o);
+                          }}
+                        >
+                          {lines.map((line, i) => (
+                            <div key={i} className="truncate text-[10px] leading-tight">
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                </div>
+              ))}
+            </div>
+
+            {/* Red current-time line (inside teams area, spans full width) */}
+            {showCurrentTimeLine && currentLineTop != null && (
+              <div
+                className="pointer-events-none absolute left-0 z-20 h-0.5 bg-red-500"
+                style={{
+                  top: 41 + currentLineTop,
+                  width: teamsAreaWidth,
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
