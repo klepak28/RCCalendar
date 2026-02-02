@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { format, parseISO, isToday } from 'date-fns';
 import { tasks, teams, sortTeamsNaturally, type TaskOccurrence, type Team } from '@/lib/api';
 import { getEventDisplayLines } from '@/lib/calendar-settings';
@@ -11,6 +11,7 @@ const HOUR_END = 22;
 const PX_PER_MINUTE = 1.2;
 const TOTAL_MINUTES = (HOUR_END - HOUR_START) * 60;
 const GRID_HEIGHT_PX = TOTAL_MINUTES * PX_PER_MINUTE;
+const DAY_VIEW_SCROLL_HEIGHT = 'calc(100vh - 200px)';
 
 function startOfDayLocal(d: Date): Date {
   const r = new Date(d);
@@ -140,24 +141,62 @@ export default function DayView({
       ? (currentMinutes - gridStartMinutes) * PX_PER_MINUTE
       : null;
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const lineRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showCurrentTimeLine || !lineRef.current || !scrollRef.current) return;
+    const setLineWidth = () => {
+      if (lineRef.current && scrollRef.current) {
+        lineRef.current.style.width = `${scrollRef.current.scrollWidth}px`;
+      }
+    };
+    setLineWidth();
+    const ro = new ResizeObserver(setLineWidth);
+    ro.observe(scrollRef.current);
+    return () => ro.disconnect();
+  }, [showCurrentTimeLine, columns.length]);
+
   const hours: number[] = [];
   for (let h = HOUR_START; h < HOUR_END; h++) {
     hours.push(h);
   }
 
+  const gridMinWidth = 80 + columns.length * 120;
+  const contentHeight = 41 + GRID_HEIGHT_PX;
+
   return (
-    <div className="relative overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div
+      className="relative rounded-xl border border-gray-200 bg-white shadow-sm"
+      style={{ height: DAY_VIEW_SCROLL_HEIGHT }}
+    >
       {loading && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/80">
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/80 rounded-xl">
           <span className="text-sm text-gray-500">Loading…</span>
         </div>
       )}
       <div
-        className="grid min-w-[600px]"
+        ref={scrollRef}
+        className="h-full overflow-x-scroll overflow-y-scroll"
         style={{
-          gridTemplateColumns: `80px repeat(${columns.length}, minmax(120px, 1fr))`,
+          scrollbarGutter: 'stable both-edges',
         }}
       >
+        <div
+          className="relative"
+          style={{
+            minWidth: gridMinWidth,
+            width: 'max-content',
+            height: contentHeight,
+          }}
+        >
+          <div
+            className="grid"
+            style={{
+              gridTemplateColumns: `80px repeat(${columns.length}, minmax(120px, 1fr))`,
+              width: gridMinWidth,
+            }}
+          >
         <div className="border-b border-r border-gray-200 bg-gray-50/80" />
         {columns.map((col) => (
           <div
@@ -199,17 +238,18 @@ export default function DayView({
           </React.Fragment>
         ))}
 
-        <div style={{ height: 0, gridColumn: '1 / -1' }} />
-      </div>
+            <div style={{ height: 0, gridColumn: '1 / -1' }} />
+          </div>
 
-      <div
-        className="pointer-events-none absolute left-0 top-[41px] right-0 z-10 min-w-[600px]"
-        style={{
-          height: GRID_HEIGHT_PX,
-          display: 'grid',
-          gridTemplateColumns: `80px repeat(${columns.length}, minmax(120px, 1fr))`,
-        }}
-      >
+          <div
+            className="pointer-events-none absolute left-0 top-[41px] z-10"
+            style={{
+              height: GRID_HEIGHT_PX,
+              width: gridMinWidth,
+              display: 'grid',
+              gridTemplateColumns: `80px repeat(${columns.length}, minmax(120px, 1fr))`,
+            }}
+          >
         <div className="col-span-1" />
         {columns.map((col) => (
           <div
@@ -263,14 +303,16 @@ export default function DayView({
           </div>
         ))}
 
-        {showCurrentTimeLine && currentLineTop != null && (
-          <div
-            className="pointer-events-none absolute left-0 right-0 z-10 h-0.5 bg-red-500"
-            style={{ top: currentLineTop }}
-          >
-            <div className="absolute -left-1 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-red-500" />
           </div>
-        )}
+
+          {showCurrentTimeLine && currentLineTop != null && (
+            <div
+              ref={lineRef}
+              className="pointer-events-none absolute left-0 z-20 h-0.5 bg-red-500"
+              style={{ top: 41 + currentLineTop }}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
